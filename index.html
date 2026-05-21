@@ -64,48 +64,55 @@ function getShiftsForDate(base, activeShifts) {
   }).sort((a, b) => a.start - b.start);
 }
 
-function snapToShift(tMs, shifts, workingDays) {
+function isProductiveDay(date, workingDays, dateOverrides) {
+  const dateStr = `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`;
+  const ov = dateOverrides && dateOverrides[dateStr];
+  if (ov === "on")  return true;
+  if (ov === "off") return false;
+  const wd = workingDays && workingDays.length ? workingDays : [0,1,2,3,4,5,6];
+  return wd.includes(date.getDay());
+}
+
+function snapToShift(tMs, shifts, workingDays, dateOverrides) {
   const active = (shifts || []).filter(s => s.active !== false);
   if (!active.length) return tMs;
-  const wd = workingDays && workingDays.length ? workingDays : [0,1,2,3,4,5,6];
   // Check if already inside a shift (also check yesterday for overnight shifts)
   for (let off = -1; off <= 0; off++) {
     const d = new Date(tMs); d.setDate(d.getDate() + off);
     const base = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-    if (!wd.includes(base.getDay())) continue;
+    if (!isProductiveDay(base, workingDays, dateOverrides)) continue;
     for (const sh of getShiftsForDate(base, active))
       if (sh.start <= tMs && sh.end > tMs) return tMs;
   }
-  // Find next upcoming shift start
-  for (let off = 0; off < 14; off++) {
+  // Find next upcoming shift start (up to 60 days ahead to handle long override-off periods)
+  for (let off = 0; off < 60; off++) {
     const d = new Date(tMs); d.setDate(d.getDate() + off);
     const base = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-    if (!wd.includes(base.getDay())) continue;
+    if (!isProductiveDay(base, workingDays, dateOverrides)) continue;
     for (const sh of getShiftsForDate(base, active))
       if (sh.start > tMs) return sh.start;
   }
   return tMs;
 }
 
-function addWorkingTime(startMs, durMs, shifts, workingDays) {
+function addWorkingTime(startMs, durMs, shifts, workingDays, dateOverrides) {
   const active = (shifts || []).filter(s => s.active !== false);
   if (!active.length || durMs <= 0) return startMs + Math.max(0, durMs);
-  const wd = workingDays && workingDays.length ? workingDays : [0,1,2,3,4,5,6];
-  let t = snapToShift(startMs, active, wd);
+  let t = snapToShift(startMs, active, workingDays, dateOverrides);
   let rem = durMs, g = 0;
   while (rem > 0 && g++ < 5000) {
     let cur = null;
     for (let off = -1; off <= 0 && !cur; off++) {
       const d = new Date(t); d.setDate(d.getDate() + off);
       const base = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-      if (wd.includes(base.getDay()))
+      if (isProductiveDay(base, workingDays, dateOverrides))
         cur = getShiftsForDate(base, active).find(sh => sh.start <= t && sh.end > t) || null;
     }
-    if (!cur) { t = snapToShift(t + 60000, active, wd); continue; }
+    if (!cur) { t = snapToShift(t + 60000, active, workingDays, dateOverrides); continue; }
     const avail = cur.end - t;
     if (rem <= avail) return t + rem;
     rem -= avail;
-    t = snapToShift(cur.end + 1000, active, wd);
+    t = snapToShift(cur.end + 1000, active, workingDays, dateOverrides);
   }
   return t;
 }
@@ -138,15 +145,19 @@ const INITIAL_DATA = {
         { id: "M07", name: "Cabina Pintura-A", stageId: "S5", capacityPerHour: 15 },
       ],
       skus: [
-        { id: "SKU-C01", name: "Comedor Rústico 4p",    family: "Rústico",    batchSize: 4, color: "#E07B39", unitValue: 1200000, stageTimes: { S1: 45, S2: 30, S3:  90, S4: 60, S5: 40 } },
-        { id: "SKU-C02", name: "Comedor Moderno 6p",    family: "Moderno",    batchSize: 6, color: "#3A7BD5", unitValue: 1800000, stageTimes: { S1: 35, S2: 25, S3: 110, S4: 50, S5: 35 } },
-        { id: "SKU-C03", name: "Comedor Industrial 4p", family: "Industrial", batchSize: 4, color: "#6B7A8D", unitValue: 1400000, stageTimes: { S1: 50, S2: 20, S3:  80, S4: 70, S5: 45 } },
-        { id: "SKU-C04", name: "Comedor Clásico 8p",    family: "Clásico",    batchSize: 8, color: "#C9A84C", unitValue: 2500000, stageTimes: { S1: 60, S2: 40, S3: 130, S4: 80, S5: 55 } },
+        { id: "SKU-C01", name: "Comedor Rústico 4p",    family: "Rústico",    batchSize: 4, color: "#E07B39", unitValue: 1200000, inventory:  20, stageTimes: { S1: 45, S2: 30, S3:  90, S4: 60, S5: 40 } },
+        { id: "SKU-C02", name: "Comedor Moderno 6p",    family: "Moderno",    batchSize: 6, color: "#3A7BD5", unitValue: 1800000, inventory:  -8, stageTimes: { S1: 35, S2: 25, S3: 110, S4: 50, S5: 35 } },
+        { id: "SKU-C03", name: "Comedor Industrial 4p", family: "Industrial", batchSize: 4, color: "#6B7A8D", unitValue: 1400000, inventory:  15, stageTimes: { S1: 50, S2: 20, S3:  80, S4: 70, S5: 45 } },
+        { id: "SKU-C04", name: "Comedor Clásico 8p",    family: "Clásico",    batchSize: 8, color: "#C9A84C", unitValue: 2500000, inventory:   3, stageTimes: { S1: 60, S2: 40, S3: 130, S4: 80, S5: 55 } },
       ],
       forbiddenSequences: [
         { id: "FS1", from: "SKU-C01", to: "SKU-C03", reason: "Cambio de tinte requiere limpieza mayor (2h)" },
         { id: "FS2", from: "SKU-C04", to: "SKU-C01", reason: "Restos de barniz oscuro contaminan acabado claro" },
       ],
+      priorityRules: [
+        { id: "PR1", from: "SKU-C02", before: "SKU-C01", reason: "Aprovechar MP de cortes 6p para 4p en caso de error" },
+      ],
+      dateOverrides: {},
       setupMatrix: {
         "SKU-C01|SKU-C02": 20, "SKU-C01|SKU-C03": 90, "SKU-C01|SKU-C04": 30,
         "SKU-C02|SKU-C01": 20, "SKU-C02|SKU-C03": 40, "SKU-C02|SKU-C04": 25,
@@ -176,15 +187,17 @@ const INITIAL_DATA = {
         { id: "M18", name: "Estación QC",        stageId: "S6", capacityPerHour: 12 },
       ],
       skus: [
-        { id: "SKU-S01", name: "Sofá 3-cuerpos Tela", family: "Tela",    batchSize: 2, color: "#2E86AB", unitValue: 2000000, stageTimes: { S1:  60, S2: 45, S3: 120, S4:  90, S5:  80, S6: 20 } },
-        { id: "SKU-S02", name: "Sofá Piel Premium",   family: "Piel",    batchSize: 1, color: "#A23B72", unitValue: 4500000, stageTimes: { S1:  90, S2: 60, S3: 180, S4: 110, S5: 120, S6: 30 } },
-        { id: "SKU-S03", name: "Loveseat Tela 2p",    family: "Tela",    batchSize: 3, color: "#48CAE4", unitValue: 1500000, stageTimes: { S1:  40, S2: 30, S3:  80, S4:  60, S5:  55, S6: 15 } },
-        { id: "SKU-S04", name: "Seccional Modular",   family: "Modular", batchSize: 1, color: "#F4A261", unitValue: 5500000, stageTimes: { S1: 120, S2: 80, S3: 200, S4: 150, S5: 160, S6: 40 } },
+        { id: "SKU-S01", name: "Sofá 3-cuerpos Tela", family: "Tela",    batchSize: 2, color: "#2E86AB", unitValue: 2000000, inventory:   5, stageTimes: { S1:  60, S2: 45, S3: 120, S4:  90, S5:  80, S6: 20 } },
+        { id: "SKU-S02", name: "Sofá Piel Premium",   family: "Piel",    batchSize: 1, color: "#A23B72", unitValue: 4500000, inventory:  -3, stageTimes: { S1:  90, S2: 60, S3: 180, S4: 110, S5: 120, S6: 30 } },
+        { id: "SKU-S03", name: "Loveseat Tela 2p",    family: "Tela",    batchSize: 3, color: "#48CAE4", unitValue: 1500000, inventory:   8, stageTimes: { S1:  40, S2: 30, S3:  80, S4:  60, S5:  55, S6: 15 } },
+        { id: "SKU-S04", name: "Seccional Modular",   family: "Modular", batchSize: 1, color: "#F4A261", unitValue: 5500000, inventory:   0, stageTimes: { S1: 120, S2: 80, S3: 200, S4: 150, S5: 160, S6: 40 } },
       ],
       forbiddenSequences: [
         { id: "FS1", from: "SKU-S02", to: "SKU-S01", reason: "Piel y tela no comparten herramientas sin descontaminación" },
         { id: "FS2", from: "SKU-S04", to: "SKU-S03", reason: "Reset de plantillas seccional toma 3h" },
       ],
+      priorityRules: [],
+      dateOverrides: {},
       setupMatrix: {
         "SKU-S01|SKU-S02": 45, "SKU-S01|SKU-S03": 15, "SKU-S01|SKU-S04": 60,
         "SKU-S02|SKU-S01": 45, "SKU-S02|SKU-S03": 50, "SKU-S02|SKU-S04": 40,
@@ -220,6 +233,7 @@ function buildSchedule(data, heuristic, lineId, customOrder) {
   const lineOrders = data.orders.filter(o => o.lineId === lineId);
   const shifts = line.shifts || [];
   const wd     = line.workingDays || [0,1,2,3,4,5,6];
+  const dOv    = line.dateOverrides || {};
 
   // --- explode orders into batches ---
   let batches = [];
@@ -252,6 +266,41 @@ function buildSchedule(data, heuristic, lineId, customOrder) {
     else if (heuristic === "WSPT") batches.sort((a,b) => (b.priority/tot(b)) - (a.priority/tot(a)));
     else if (heuristic === "CR")   { const now = Date.now(); batches.sort((a,b) => ((new Date(a.dueDate)-now)/tot(a)) - ((new Date(b.dueDate)-now)/tot(b))); }
     // FIFO: no sort
+
+    // --- BACKLOG PRIORITY BOOST ---
+    // SKUs with negative inventory go first (stable sort preserves heuristic order within each group)
+    const isBacklog = (skuId) => {
+      const sku = line.skus.find(s => s.id === skuId);
+      return sku && typeof sku.inventory === "number" && sku.inventory < 0;
+    };
+    batches.sort((a, b) => {
+      const aB = isBacklog(a.skuId) ? 1 : 0;
+      const bB = isBacklog(b.skuId) ? 1 : 0;
+      return bB - aB; // backlog (1) before non-backlog (0)
+    });
+
+    // --- CUSTOM PRIORITY RULES ---
+    // For each rule "from before before": move all `from` batches to before any `before` batches
+    // (only applies when there's no custom drag-and-drop order)
+    if (line.priorityRules?.length) {
+      for (const rule of line.priorityRules) {
+        if (!rule.from || !rule.before || rule.from === rule.before) continue;
+        const firstBeforeIdx = batches.findIndex(b => b.skuId === rule.before);
+        if (firstBeforeIdx < 0) continue;
+        // Find all `from` batches that come AFTER the first `before` batch
+        const misplaced = [];
+        for (let i = batches.length - 1; i > firstBeforeIdx; i--) {
+          if (batches[i].skuId === rule.from) {
+            misplaced.unshift(batches.splice(i, 1)[0]);
+          }
+        }
+        if (misplaced.length) {
+          // Re-find insertion point after splices
+          const insertAt = batches.findIndex(b => b.skuId === rule.before);
+          batches.splice(insertAt, 0, ...misplaced);
+        }
+      }
+    }
   }
 
   // --- LOOK-AHEAD RESEQUENCING to respect forbidden sequences ---
@@ -289,7 +338,7 @@ function buildSchedule(data, heuristic, lineId, customOrder) {
 
   // --- assign operations ---
   const nowMs  = Date.now();
-  const t0     = snapToShift(nowMs, shifts, wd);
+  const t0     = snapToShift(nowMs, shifts, wd, dOv);
   const mAvail = {}, sAvail = {}, prevSku = {};
   line.machines.forEach(m => { mAvail[m.id] = t0; });
   line.stages.forEach(s   => { sAvail[s.id] = t0; });
@@ -305,9 +354,9 @@ function buildSchedule(data, heuristic, lineId, customOrder) {
         ? (line.setupMatrix[`${prevSku[stage.id]}|${batch.skuId}`] || 0) : 0;
       const machine   = sms.reduce((best,m) => (mAvail[m.id]||0) < (mAvail[best.id]||0) ? m : best, sms[0]);
       const earliest  = Math.max(prevEnd, mAvail[machine.id]||0, sAvail[stage.id]||0);
-      const setupStartMs = snapToShift(earliest, shifts, wd);
-      const workStartMs  = setupMins > 0 ? addWorkingTime(setupStartMs, setupMins*60000, shifts, wd) : setupStartMs;
-      const opEndMs      = addWorkingTime(workStartMs, stMins*60000, shifts, wd);
+      const setupStartMs = snapToShift(earliest, shifts, wd, dOv);
+      const workStartMs  = setupMins > 0 ? addWorkingTime(setupStartMs, setupMins*60000, shifts, wd, dOv) : setupStartMs;
+      const opEndMs      = addWorkingTime(workStartMs, stMins*60000, shifts, wd, dOv);
       mAvail[machine.id] = opEndMs; sAvail[stage.id] = opEndMs;
       prevSku[stage.id]  = batch.skuId; prevEnd = opEndMs;
       ops.push({
@@ -382,8 +431,123 @@ function ApiKeyModal({ currentKey, onSave, onClose, themeMode }) {
   );
 }
 
+// ════════════════════════════════════════════════════════════════
+//  PRODUCTION CALENDAR — month grid for selecting working days
+// ════════════════════════════════════════════════════════════════
+function ProductionCalendar({ line, onToggle, onClear, dailyGoals }) {
+  const [viewMonth, setViewMonth] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
+  const todayStr = `${new Date().getFullYear()}-${String(new Date().getMonth()+1).padStart(2,"0")}-${String(new Date().getDate()).padStart(2,"0")}`;
+  const overrides = line.dateOverrides || {};
+  const wd = line.workingDays || [0,1,2,3,4,5,6];
+  // Build the 6-week grid (always 42 cells, Mon-first)
+  const firstOfMonth = new Date(viewMonth.getFullYear(), viewMonth.getMonth(), 1);
+  // Days from Monday: 0=Mon, 6=Sun. JS getDay: 0=Sun, 1=Mon, ..., 6=Sat
+  const firstDayOfWeek = (firstOfMonth.getDay() + 6) % 7; // shift so Monday=0
+  const days = [];
+  const startDate = new Date(firstOfMonth);
+  startDate.setDate(startDate.getDate() - firstDayOfWeek);
+  for (let i = 0; i < 42; i++) {
+    const d = new Date(startDate);
+    d.setDate(startDate.getDate() + i);
+    const dateStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+    const inCurrentMonth = d.getMonth() === viewMonth.getMonth();
+    const defaultOn = wd.includes(d.getDay());
+    const override = overrides[dateStr];
+    const productive = override === "on" ? true : override === "off" ? false : defaultOn;
+    const isOverride = override !== undefined;
+    const isToday = dateStr === todayStr;
+    const hasGoal = dailyGoals?.[dateStr] !== undefined && dailyGoals[dateStr] > 0;
+    days.push({ d, dateStr, dayNum: d.getDate(), inCurrentMonth, productive, isOverride, isToday, hasGoal });
+  }
+  const prevMonth = () => setViewMonth(m => new Date(m.getFullYear(), m.getMonth()-1, 1));
+  const nextMonth = () => setViewMonth(m => new Date(m.getFullYear(), m.getMonth()+1, 1));
+  const goToday = () => { const t = new Date(); setViewMonth(new Date(t.getFullYear(), t.getMonth(), 1)); };
+  const monthLabel = viewMonth.toLocaleDateString("es-CO", { month: "long", year: "numeric" });
+  const overrideCount = Object.keys(overrides).length;
+  return (
+    <div style={{background:"var(--surface)",border:"1px solid var(--border)",borderRadius:9,padding:"14px 16px"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,flexWrap:"wrap",gap:8}}>
+        <div style={{display:"flex",alignItems:"center",gap:6}}>
+          <button onClick={prevMonth} style={{padding:"4px 10px",background:"var(--surface-2)",border:"1px solid var(--border-2)",color:"var(--text-muted)",borderRadius:5,cursor:"pointer",fontSize:13,fontFamily:"'DM Mono',monospace"}}>‹</button>
+          <div style={{minWidth:140,textAlign:"center",fontSize:13,fontWeight:600,fontFamily:"'Syne',sans-serif",textTransform:"capitalize"}}>{monthLabel}</div>
+          <button onClick={nextMonth} style={{padding:"4px 10px",background:"var(--surface-2)",border:"1px solid var(--border-2)",color:"var(--text-muted)",borderRadius:5,cursor:"pointer",fontSize:13,fontFamily:"'DM Mono',monospace"}}>›</button>
+          <button onClick={goToday} style={{padding:"4px 10px",marginLeft:8,background:"rgba(245,158,11,.1)",border:"1px solid rgba(245,158,11,.3)",color:"#F59E0B",borderRadius:5,cursor:"pointer",fontSize:11,fontFamily:"'DM Mono',monospace"}}>Hoy</button>
+        </div>
+        {overrideCount > 0 && (
+          <button onClick={()=>{if(confirm(`¿Limpiar las ${overrideCount} excepciones del calendario? Volverá al patrón semanal.`)) onClear();}} title="Eliminar todas las excepciones del calendario" style={{padding:"4px 10px",background:"transparent",border:"1px solid rgba(248,113,113,.25)",color:"#F87171",borderRadius:5,cursor:"pointer",fontSize:11,fontFamily:"'DM Mono',monospace"}}>↺ Limpiar excepciones ({overrideCount})</button>
+        )}
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:4,marginBottom:4}}>
+        {["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"].map(d => (
+          <div key={d} style={{textAlign:"center",fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"4px 0"}}>{d}</div>
+        ))}
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:4}}>
+        {days.map((day, i) => {
+          const bg = day.productive
+            ? (day.isOverride ? "rgba(52,211,153,.18)" : "rgba(52,211,153,.06)")
+            : (day.isOverride ? "rgba(107,122,154,.18)" : "var(--surface-2)");
+          const fg = day.productive ? "#34D399" : "var(--text-dim)";
+          const opacity = day.inCurrentMonth ? 1 : 0.35;
+          return (
+            <button
+              key={i}
+              onClick={() => onToggle(day.dateStr)}
+              title={`${day.dateStr} — ${day.productive?"Productivo":"No productivo"}${day.isOverride?" (excepción)":""}${day.hasGoal?" · tiene meta":""}`}
+              style={{
+                position:"relative",
+                padding:"10px 6px",
+                background: bg,
+                color: fg,
+                border: day.isToday ? "2px solid #F59E0B" : "1px solid var(--border)",
+                borderRadius: 6,
+                cursor: "pointer",
+                fontSize: 13,
+                fontFamily: "'DM Mono',monospace",
+                fontWeight: day.isOverride ? 700 : 500,
+                opacity,
+                minHeight: 44,
+                display:"flex",
+                alignItems:"center",
+                justifyContent:"center"
+              }}
+            >
+              <span>{day.dayNum}</span>
+              {day.isOverride && <span style={{position:"absolute",top:3,right:5,width:5,height:5,borderRadius:"50%",background:day.productive?"#34D399":"#F87171"}}/>}
+              {day.hasGoal && <span style={{position:"absolute",bottom:3,left:5,fontSize:8,color:"#F59E0B"}}>$</span>}
+            </button>
+          );
+        })}
+      </div>
+      <div style={{marginTop:12,display:"flex",gap:14,flexWrap:"wrap",fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace"}}>
+        <span><span style={{display:"inline-block",width:10,height:10,borderRadius:3,background:"rgba(52,211,153,.06)",marginRight:5,verticalAlign:"middle"}}/>Productivo (patrón)</span>
+        <span><span style={{display:"inline-block",width:10,height:10,borderRadius:3,background:"rgba(52,211,153,.18)",marginRight:5,verticalAlign:"middle",border:"1px solid #34D399"}}/>Productivo (excepción)</span>
+        <span><span style={{display:"inline-block",width:10,height:10,borderRadius:3,background:"var(--surface-2)",marginRight:5,verticalAlign:"middle"}}/>No productivo (patrón)</span>
+        <span><span style={{display:"inline-block",width:10,height:10,borderRadius:3,background:"rgba(107,122,154,.18)",marginRight:5,verticalAlign:"middle",border:"1px solid #F87171"}}/>No productivo (excepción)</span>
+        <span style={{color:"#F59E0B"}}>$ = día con meta</span>
+      </div>
+      <div style={{marginTop:8,fontSize:11,color:"var(--text-muted)",lineHeight:1.5}}>
+        <strong style={{color:"var(--text)"}}>Click un día</strong> para cambiar su estado. El patrón semanal (configurado abajo) define el valor por defecto; el calendario lo sobrescribe día por día. Los cambios afectan automáticamente al Gantt y a las metas de facturación.
+      </div>
+    </div>
+  );
+}
+
 const DAY_NAMES = ["Dom","Lun","Mar","Mié","Jue","Vie","Sáb"];
 const fmtDayKey = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+
+// Decide if a given date is a working day for the line, considering:
+// 1) The line's weekly pattern (workingDays array of day-of-week 0-6)
+// 2) Per-date overrides in line.dateOverrides ("on" forces productive, "off" forces non-productive)
+function isWorkingDate(dateStr, line) {
+  if (!line) return true;
+  const overrides = line.dateOverrides || {};
+  if (overrides[dateStr] === "on")  return true;
+  if (overrides[dateStr] === "off") return false;
+  const d = new Date(dateStr + "T12:00:00");
+  const wd = line.workingDays && line.workingDays.length ? line.workingDays : [0,1,2,3,4,5,6];
+  return wd.includes(d.getDay());
+}
 
 function PriorityDots({ n }) {
   return <div style={{display:"flex",gap:3}}>{[1,2,3,4,5].map(i=><div key={i} style={{width:6,height:6,borderRadius:"50%",background:i<=n?"#FBBF24":"var(--border-2)"}}/>)}</div>;
@@ -435,30 +599,35 @@ function App() {
     const t = new Date(); t.setDate(t.getDate()+6); return t.toISOString().slice(0,10);
   });
   const [horizonDefault, setHorizonDefault] = useState(80000);
-  const [horizonReplace, setHorizonReplace] = useState(false);
   const handleApplyHorizon = () => {
     const start = new Date(horizonStart+"T12:00:00");
     const end = new Date(horizonEnd+"T12:00:00");
     if (isNaN(start) || isNaN(end) || end < start) { alert("Rango inválido. La fecha final debe ser igual o posterior a la inicial."); return; }
     const lid = activeLine;
+    let added = 0, skipped = 0;
     mutate(d => {
       if (!d.dailyGoals) d.dailyGoals = {};
       if (!d.dailyGoals[lid]) d.dailyGoals[lid] = {};
-      if (horizonReplace) d.dailyGoals[lid] = {};
+      const lineObj = d.lines.find(l => l.id === lid);
       const cur = new Date(start);
       while (cur <= end) {
         const key = `${cur.getFullYear()}-${String(cur.getMonth()+1).padStart(2,"0")}-${String(cur.getDate()).padStart(2,"0")}`;
-        // Skip non-working days (use line's workingDays)
-        const lineObj = d.lines.find(l => l.id === lid);
-        if (!lineObj.workingDays || lineObj.workingDays.includes(cur.getDay())) {
-          if (horizonReplace || !d.dailyGoals[lid][key]) {
+        // Use isProductiveDay - respects both weekly pattern AND date overrides
+        if (isProductiveDay(cur, lineObj.workingDays, lineObj.dateOverrides)) {
+          if (d.dailyGoals[lid][key] === undefined) {
             d.dailyGoals[lid][key] = horizonDefault;
+            added++;
+          } else {
+            skipped++;
           }
         }
         cur.setDate(cur.getDate()+1);
       }
     });
     setShowHorizonModal(false);
+    if (added === 0 && skipped > 0) {
+      setTimeout(() => alert(`No se agregaron metas nuevas. Los ${skipped} días productivos en este rango ya tenían metas. Para editarlas o borrarlas, usa la tabla en la pestaña Metas.`), 100);
+    }
   };
 
   // Auto-save: persist data to localStorage on every change (debounced)
@@ -516,13 +685,13 @@ function App() {
     const lineObj = data.lines.find(l => l.id === lineId);
     const stageNames = lineObj.stages.sort((a,b)=>a.order-b.order).map(s => `${s.name} (min)`);
 
-    // SKUs sheet headers - NO color (auto-assigned), include unitValue
-    const skusHeader = ["ID","Nombre","Familia","Lote (pzs)","Valor unitario (COP)", ...stageNames];
+    // SKUs sheet headers - NO color (auto-assigned), include unitValue and inventory
+    const skusHeader = ["ID","Nombre","Familia","Lote (pzs)","Valor unitario (COP)","Inventario (negativo = backlog)", ...stageNames];
     const skusRows = lineObj.skus.map(s => {
       const times = lineObj.stages.sort((a,b)=>a.order-b.order).map(st => s.stageTimes?.[st.id] || 0);
-      return [s.id, s.name, s.family, s.batchSize, s.unitValue || 0, ...times];
+      return [s.id, s.name, s.family, s.batchSize, s.unitValue || 0, s.inventory || 0, ...times];
     });
-    if (!skusRows.length) skusRows.push(["SKU-NEW","Producto ejemplo","General",1,1500000, ...stageNames.map(()=>30)]);
+    if (!skusRows.length) skusRows.push(["SKU-NEW","Producto ejemplo","General",1,1500000, 0, ...stageNames.map(()=>30)]);
 
     // Machines sheet
     const machinesHeader = ["ID","Nombre","Etapa (ID)","Etapa (nombre — referencia)","Cap./hora"];
@@ -549,13 +718,14 @@ function App() {
       ["INSTRUCCIONES:"],
       ["1. Edita las hojas 'SKUs' y 'Máquinas' con tus datos."],
       ["2. SKUs: la columna 'Valor unitario (COP)' es el precio por pieza."],
-      ["3. Las órdenes de producción calcularán su valor total automáticamente como cantidad × valor unitario."],
-      ["4. El color de cada SKU se asigna automáticamente al importar."],
-      ["5. En 'Máquinas', usa el ID de etapa (columna C) - no el nombre."],
-      ["6. La columna ID debe ser única dentro de cada hoja."],
-      ["7. Para nuevos registros, deja ID vacío - se autogenerará uno."],
-      ["8. Los tiempos de etapa (SKUs) son minutos por unidad."],
-      ["9. Sube este archivo desde el botón 'Importar Excel' en la app."]
+      ["3. SKUs: 'Inventario' es el stock inicial. Valores negativos = backlog con cliente y se programan primero."],
+      ["4. Las órdenes de producción calcularán su valor total automáticamente como cantidad × valor unitario."],
+      ["5. El color de cada SKU se asigna automáticamente al importar."],
+      ["6. En 'Máquinas', usa el ID de etapa (columna C) - no el nombre."],
+      ["7. La columna ID debe ser única dentro de cada hoja."],
+      ["8. Para nuevos registros, deja ID vacío - se autogenerará uno."],
+      ["9. Los tiempos de etapa (SKUs) son minutos por unidad."],
+      ["10. Sube este archivo desde el botón 'Importar Excel' en la app."]
     ]);
     XLSX.utils.book_append_sheet(wb, wsSku, "SKUs");
     XLSX.utils.book_append_sheet(wb, wsMch, "Máquinas");
@@ -585,7 +755,7 @@ function App() {
             for (let i = 1; i < rows.length; i++) {
               const row = rows[i];
               if (!row || row.every(c => c === "" || c == null)) continue;
-              const [id, name, family, batchSize, unitValue, ...times] = row;
+              const [id, name, family, batchSize, unitValue, inventory, ...times] = row;
               if (!name || String(name).trim() === "") continue;
               const stageTimes = {};
               stagesOrdered.forEach((s, idx) => {
@@ -603,6 +773,7 @@ function App() {
                 family: family ? String(family).trim() : "General",
                 batchSize: Math.max(1, parseInt(batchSize) || 1),
                 unitValue: Math.max(0, parseFloat(unitValue) || 0),
+                inventory: isNaN(parseInt(inventory)) ? 0 : parseInt(inventory),
                 color: assignedColor,
                 stageTimes
               };
@@ -710,11 +881,64 @@ function App() {
     d.lines[li].workingDays=wd.includes(day)?wd.filter(w=>w!==day):[...wd,day].sort((a,b)=>a-b);
   }),[mutate]);
 
+  // Toggle a specific calendar date as productive/non-productive (overrides the weekly pattern)
+  const handleDateOverrideToggle = useCallback((lid, dateStr) => mutate(d=>{
+    const li=d.lines.findIndex(l=>l.id===lid);
+    const line=d.lines[li];
+    if (!line.dateOverrides) line.dateOverrides={};
+    const dt=new Date(dateStr+"T12:00:00");
+    const wd=line.workingDays||[0,1,2,3,4,5,6];
+    const defaultIsOn = wd.includes(dt.getDay());
+    const cur=line.dateOverrides[dateStr];
+    // Cycle: default → opposite of default → back to default
+    if (cur === undefined) {
+      line.dateOverrides[dateStr] = defaultIsOn ? "off" : "on";
+    } else {
+      delete line.dateOverrides[dateStr];
+    }
+  }),[mutate]);
+  const handleDateOverrideClear = useCallback((lid) => mutate(d=>{
+    const li=d.lines.findIndex(l=>l.id===lid);
+    d.lines[li].dateOverrides={};
+  }),[mutate]);
+
   const handleDailyGoalUpdate = useCallback((lid,date,val) => mutate(d=>{
     if(!d.dailyGoals) d.dailyGoals={};
     if(!d.dailyGoals[lid]) d.dailyGoals[lid]={};
     const n=parseFloat(val); if(!isNaN(n)&&n>=0) d.dailyGoals[lid][date]=n;
   }),[mutate]);
+  const handleDailyGoalRemove = useCallback((lid,date) => mutate(d=>{
+    if(d.dailyGoals?.[lid]?.[date] !== undefined) delete d.dailyGoals[lid][date];
+  }),[mutate]);
+
+  // ─── CRUD: Priority Rules ─────────────────────────────────────
+  const handleUpdatePriorityRule = useCallback((lid, rid, field, val) => mutate(d => {
+    const li = d.lines.findIndex(l => l.id === lid);
+    if (!d.lines[li].priorityRules) d.lines[li].priorityRules = [];
+    const ri = d.lines[li].priorityRules.findIndex(r => r.id === rid);
+    if (ri >= 0) d.lines[li].priorityRules[ri][field] = val;
+  }), [mutate]);
+  const handleAddPriorityRule = useCallback(lid => mutate(d => {
+    const li = d.lines.findIndex(l => l.id === lid);
+    if (!d.lines[li].priorityRules) d.lines[li].priorityRules = [];
+    const skus = d.lines[li].skus;
+    if (skus.length < 2) return;
+    d.lines[li].priorityRules.push({ id: "PR" + (Date.now()%100000), from: skus[0].id, before: skus[1].id, reason: "Sin descripción" });
+  }), [mutate]);
+  const handleRemovePriorityRule = useCallback((lid, rid) => mutate(d => {
+    const li = d.lines.findIndex(l => l.id === lid);
+    if (d.lines[li].priorityRules) d.lines[li].priorityRules = d.lines[li].priorityRules.filter(r => r.id !== rid);
+  }), [mutate]);
+
+  // Inventory editor for SKUs (signed integer; negative = backlog)
+  const handleUpdateInventory = useCallback((lid, sid, val) => mutate(d => {
+    const li = d.lines.findIndex(l => l.id === lid);
+    const si = d.lines[li].skus.findIndex(s => s.id === sid);
+    if (si >= 0) {
+      const n = parseInt(val);
+      d.lines[li].skus[si].inventory = isNaN(n) ? 0 : n;
+    }
+  }), [mutate]);
 
   // ─── CRUD: Stages ─────────────────────────────────────────────
   const handleUpdateStage = useCallback((lid, sid, field, val) => mutate(d => {
@@ -1024,9 +1248,9 @@ Responde en español.`;
 
     // Shift-window bands for Gantt background
     const shiftBands = [];
-    { const active=(line.shifts||[]).filter(s=>s.active!==false); const wd=line.workingDays||[0,1,2,3,4,5,6];
+    { const active=(line.shifts||[]).filter(s=>s.active!==false); const wd=line.workingDays||[0,1,2,3,4,5,6]; const dOv=line.dateOverrides||{};
       let d=new Date(now); d.setHours(0,0,0,0);
-      while(d.getTime()<maxT+86400000){ if(wd.includes(d.getDay())){ getShiftsForDate(d,active).forEach(sh=>{if(sh.end<now||sh.start>maxT)return; const l=Math.max(0,((sh.start-now)/span)*100),r=Math.min(100,((sh.end-now)/span)*100); if(r>l)shiftBands.push({left:l,width:r-l,name:sh.name});}); } d.setDate(d.getDate()+1); }
+      while(d.getTime()<maxT+86400000){ if(isProductiveDay(d,wd,dOv)){ getShiftsForDate(d,active).forEach(sh=>{if(sh.end<now||sh.start>maxT)return; const l=Math.max(0,((sh.start-now)/span)*100),r=Math.min(100,((sh.end-now)/span)*100); if(r>l)shiftBands.push({left:l,width:r-l,name:sh.name});}); } d.setDate(d.getDate()+1); }
     }
 
     const fmtT = ms => {
@@ -1298,11 +1522,13 @@ Responde en español.`;
               const c=pct===null?"var(--text-dim)":pct>=100?"#34D399":pct>=70?"#FBBF24":"#F87171";
               const isToday=date===todayKey;
               const d=new Date(date+"T12:00:00");
+              const productive = isProductiveDay(d, line?.workingDays, line?.dateOverrides);
               return (
-                <tr key={date} style={{borderBottom:"1px solid var(--surface)",background:isToday?"rgba(245,158,11,.025)":"transparent"}}>
+                <tr key={date} style={{borderBottom:"1px solid var(--surface)",background:isToday?"rgba(245,158,11,.025)":(productive?"transparent":"rgba(107,122,154,.04)"),opacity:productive?1:0.55}}>
                   <td style={{padding:"9px 10px",fontFamily:"'DM Mono',monospace",fontSize:11}}>
-                    <span style={{color:isToday?"#F59E0B":undefined}}>{d.toLocaleDateString("es-CO",{weekday:"short",day:"2-digit",month:"short"})}</span>
+                    <span style={{color:isToday?"#F59E0B":undefined,textDecoration:productive?"none":"line-through"}}>{d.toLocaleDateString("es-CO",{weekday:"short",day:"2-digit",month:"short"})}</span>
                     {isToday&&<span style={{marginLeft:6,fontSize:9,background:"rgba(245,158,11,.15)",color:"#F59E0B",borderRadius:3,padding:"1px 5px"}}>HOY</span>}
+                    {!productive&&<span title="Día no productivo según el calendario" style={{marginLeft:6,fontSize:9,background:"rgba(107,122,154,.15)",color:"var(--text-dim)",borderRadius:3,padding:"1px 5px"}}>NO PROD</span>}
                   </td>
                   <td style={{padding:"9px 10px"}}>
                     <input type="number" value={goal||""} placeholder="—"
@@ -1321,7 +1547,10 @@ Responde en español.`;
                     ):<span style={{color:"var(--text-dim)",fontSize:11}}>—</span>}
                   </td>
                   <td style={{padding:"9px 10px"}}>
-                    {!lineGoals[date]&&<button onClick={()=>handleDailyGoalUpdate(activeLine,date,80000)} style={{fontSize:10,padding:"2px 8px",borderRadius:4,background:"var(--border)",border:"1px solid var(--border-2)",color:"var(--text-dim)",cursor:"pointer"}}>+ Meta</button>}
+                    {lineGoals[date]
+                      ? <button onClick={()=>{if(confirm(`¿Eliminar la meta de ${date}?`)) handleDailyGoalRemove(activeLine,date);}} title="Eliminar meta" style={{padding:"3px 8px",borderRadius:4,background:"rgba(248,113,113,.08)",border:"1px solid rgba(248,113,113,.25)",color:"#F87171",cursor:"pointer",fontSize:11,fontFamily:"'DM Mono',monospace",lineHeight:1}}>× Eliminar</button>
+                      : <button onClick={()=>handleDailyGoalUpdate(activeLine,date,80000)} style={{fontSize:10,padding:"2px 8px",borderRadius:4,background:"var(--border)",border:"1px solid var(--border-2)",color:"var(--text-dim)",cursor:"pointer"}}>+ Meta</button>
+                    }
                   </td>
                 </tr>
               );
@@ -1342,7 +1571,7 @@ Responde en español.`;
   //  CONFIG VIEW  (+ Turnos tab)
   // ════════════════════════════════════════════════════════════
   const ConfigView = () => {
-    const subTabs=[["stages","Etapas"],["machines","Máquinas"],["skus","SKUs"],["forbidden","Rutas Prohibidas"],["setup","Matriz Setup"],["shifts","Turnos"]];
+    const subTabs=[["stages","Etapas"],["machines","Máquinas"],["skus","SKUs"],["forbidden","Rutas Prohibidas"],["priorities","Prioridades"],["setup","Matriz Setup"],["shifts","Turnos"]];
     // Hours in active shifts per day
     const shiftHrsDay = (line.shifts||[]).filter(s=>s.active!==false).reduce((sum,s)=>{
       const [sh,sm]=s.start.split(":").map(Number),[eh,em]=s.end.split(":").map(Number);
@@ -1426,15 +1655,19 @@ Responde en español.`;
             {line.skus.length===0 ? <div style={{textAlign:"center",padding:"30px",color:"var(--text-dim)",fontSize:13,background:"var(--surface)",borderRadius:8,border:"1px dashed var(--border)"}}>{line.stages.length?"Sin SKUs. Agrega el primero.":"Define etapas antes de agregar SKUs."}</div> : (
             <div style={{overflowX:"auto"}}>
               <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-                <thead><tr>{["Color","ID","Nombre","Familia","Lote","Valor unit. (COP)"].concat(line.stages.sort((a,b)=>a.order-b.order).map(s=>s.name+" (min)")).concat([""]).map(h=><th key={h} style={{textAlign:"left",fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"7px 8px",borderBottom:"1px solid var(--border)",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
-                <tbody>{line.skus.map(sku=>(
-                  <tr key={sku.id} style={{borderBottom:"1px solid var(--surface)"}}>
+                <thead><tr>{["Color","ID","Nombre","Familia","Lote","Valor unit. (COP)","Inventario"].concat(line.stages.sort((a,b)=>a.order-b.order).map(s=>s.name+" (min)")).concat([""]).map(h=><th key={h} style={{textAlign:"left",fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"7px 8px",borderBottom:"1px solid var(--border)",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
+                <tbody>{line.skus.map(sku=>{
+                  const inv = typeof sku.inventory === "number" ? sku.inventory : 0;
+                  const backlog = inv < 0;
+                  return (
+                  <tr key={sku.id} style={{borderBottom:"1px solid var(--surface)",background:backlog?"rgba(248,113,113,.04)":"transparent"}}>
                     <td style={{padding:"7px 8px"}} title="Color asignado automáticamente"><div style={{width:24,height:18,borderRadius:4,background:sku.color,border:"1px solid var(--border)"}}/></td>
-                    <td style={{padding:"7px 8px",fontFamily:"'DM Mono',monospace",fontSize:11,color:"var(--text-dim)"}}>{sku.id}</td>
+                    <td style={{padding:"7px 8px",fontFamily:"'DM Mono',monospace",fontSize:11,color:"var(--text-dim)"}}>{sku.id}{backlog&&<span title="Backlog - inventario negativo, se programa primero" style={{marginLeft:5,padding:"1px 5px",background:"rgba(248,113,113,.15)",border:"1px solid rgba(248,113,113,.3)",color:"#F87171",borderRadius:3,fontSize:9,fontWeight:700}}>BACKLOG</span>}</td>
                     <td style={{padding:"7px 8px"}}><input value={sku.name} onChange={e=>handleUpdateSku(activeLine,sku.id,"name",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontSize:12,outline:"none",minWidth:160}}/></td>
                     <td style={{padding:"7px 8px"}}><input value={sku.family} onChange={e=>handleUpdateSku(activeLine,sku.id,"family",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text-muted)",padding:"4px 7px",borderRadius:4,fontSize:11,outline:"none",width:100}}/></td>
                     <td style={{padding:"7px 8px"}}><input type="number" min="1" value={sku.batchSize} onChange={e=>handleUpdateSku(activeLine,sku.id,"batchSize",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:54}}/></td>
-                    <td style={{padding:"7px 8px"}}><div style={{display:"flex",alignItems:"center",gap:3}}><span style={{color:"#34D399",fontSize:11,fontFamily:"'DM Mono',monospace"}}>$</span><input type="number" min="0" value={sku.unitValue||0} onChange={e=>handleUpdateSku(activeLine,sku.id,"unitValue",Math.max(0,parseFloat(e.target.value)||0))} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"#34D399",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:110}} title="Valor por unidad en COP. Las órdenes con este SKU calcularán su valor multiplicando por la cantidad."/></div></td>
+                    <td style={{padding:"7px 8px"}}><div style={{display:"flex",alignItems:"center",gap:3}}><span style={{color:"#34D399",fontSize:11,fontFamily:"'DM Mono',monospace"}}>$</span><input type="number" min="0" value={sku.unitValue||0} onChange={e=>handleUpdateSku(activeLine,sku.id,"unitValue",Math.max(0,parseFloat(e.target.value)||0))} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"#34D399",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:110}} title="Valor por unidad en COP."/></div></td>
+                    <td style={{padding:"7px 8px"}}><input type="number" value={inv} onChange={e=>handleUpdateInventory(activeLine,sku.id,e.target.value)} style={{background:"var(--surface)",border:"1px solid "+(backlog?"rgba(248,113,113,.4)":"var(--border)"),color:backlog?"#F87171":"var(--text)",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:72,fontWeight:backlog?700:400}} title={backlog?"⚠ Backlog: el SKU se programa primero, ignorando heurística":"Inventario inicial. Negativo = backlog (cliente final pendiente)."}/></td>
                     {line.stages.sort((a,b)=>a.order-b.order).map(s=>(
                       <td key={s.id} style={{padding:"7px 8px"}}>
                         <input type="number" min="0" value={sku.stageTimes?.[s.id]||0} onChange={e=>handleUpdateSkuStageTime(activeLine,sku.id,s.id,e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:54}}/>
@@ -1442,7 +1675,7 @@ Responde en español.`;
                     ))}
                     <td style={{padding:"7px 6px"}}><button onClick={()=>{if(confirm(`¿Eliminar ${sku.name}? Limpia matriz setup y secuencias prohibidas relacionadas.`)) handleRemoveSku(activeLine,sku.id);}} title="Eliminar SKU" style={{padding:"4px 8px",borderRadius:4,background:"rgba(248,113,113,.1)",border:"1px solid rgba(248,113,113,.3)",color:"#F87171",cursor:"pointer",fontSize:11,fontFamily:"'DM Mono',monospace",lineHeight:1,fontWeight:600}}>× Eliminar</button></td>
                   </tr>
-                ))}</tbody>
+                )})}</tbody>
               </table>
             </div>
             )}
@@ -1485,6 +1718,49 @@ Responde en español.`;
           </div>
         )}
 
+        {activeConfigTab==="priorities"&&(
+          <div>
+            <div style={{fontSize:12,color:"var(--text-dim)",background:"var(--surface)",borderRadius:7,padding:"10px 14px",marginBottom:12,lineHeight:1.6}}>
+              <strong style={{color:"var(--text)"}}>Reglas de precedencia:</strong> el SKU "Primero" se programa antes que el SKU "Después" cuando ambos están en la cola.
+              Útil cuando un SKU de mayor tamaño/complejidad debe procesarse primero por si surge un error (ej: comedores 6p antes que 4p para reaprovechar MP).
+              Las reglas se aplican <strong style={{color:"#34D399"}}>después</strong> del backlog (inventario negativo) y <strong style={{color:"#FBBF24"}}>antes</strong> de la heurística normal.
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+              <div style={{fontSize:11,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em"}}>{(line.priorityRules||[]).length} reglas activas</div>
+              <button onClick={()=>handleAddPriorityRule(activeLine)} disabled={line.skus.length<2} style={{fontSize:11,padding:"5px 12px",borderRadius:5,background:"rgba(245,158,11,.1)",border:"1px solid rgba(245,158,11,.3)",color:"#F59E0B",cursor:line.skus.length>=2?"pointer":"not-allowed",opacity:line.skus.length>=2?1:.4,fontFamily:"'DM Mono',monospace"}}>+ Agregar regla</button>
+            </div>
+            {!(line.priorityRules||[]).length
+              ? <div style={{textAlign:"center",padding:"30px",color:"var(--text-dim)",fontSize:13,background:"var(--surface)",borderRadius:8,border:"1px dashed var(--border)"}}>{line.skus.length>=2?"Sin reglas de prioridad definidas. Agrega la primera regla.":"Necesitas al menos 2 SKUs para definir reglas."}</div>
+              : <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                <thead><tr>{["ID","Primero →","Después","Razón",""].map(h=><th key={h} style={{textAlign:"left",fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"7px 10px",borderBottom:"1px solid var(--border)"}}>{h}</th>)}</tr></thead>
+                <tbody>{(line.priorityRules||[]).map(r=>{
+                  const fs=line.skus.find(s=>s.id===r.from),ts=line.skus.find(s=>s.id===r.before);
+                  return (<tr key={r.id} style={{borderBottom:"1px solid var(--surface)"}}>
+                    <td style={{padding:"7px 10px",fontFamily:"'DM Mono',monospace",fontSize:11,color:"var(--text-dim)"}}>{r.id}</td>
+                    <td style={{padding:"7px 10px"}}>
+                      <div style={{display:"flex",alignItems:"center",gap:6}}>
+                        <span style={{display:"inline-block",width:8,height:8,borderRadius:2,background:fs?.color||"var(--border-2)"}}/>
+                        <select value={r.from} onChange={e=>handleUpdatePriorityRule(activeLine,r.id,"from",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"#34D399",padding:"4px 7px",borderRadius:4,fontSize:11,outline:"none",minWidth:140,fontFamily:"'DM Mono',monospace",fontWeight:600}}>{line.skus.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select>
+                      </div>
+                    </td>
+                    <td style={{padding:"7px 10px"}}>
+                      <div style={{display:"flex",alignItems:"center",gap:6}}>
+                        <span style={{display:"inline-block",width:8,height:8,borderRadius:2,background:ts?.color||"var(--border-2)"}}/>
+                        <select value={r.before} onChange={e=>handleUpdatePriorityRule(activeLine,r.id,"before",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontSize:11,outline:"none",minWidth:140,fontFamily:"'DM Mono',monospace"}}>{line.skus.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select>
+                      </div>
+                    </td>
+                    <td style={{padding:"7px 10px"}}><input value={r.reason} onChange={e=>handleUpdatePriorityRule(activeLine,r.id,"reason",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontSize:11,outline:"none",width:"100%",minWidth:240}}/></td>
+                    <td style={{padding:"7px 6px"}}><button onClick={()=>handleRemovePriorityRule(activeLine,r.id)} title="Eliminar" style={{width:22,height:22,borderRadius:4,background:"rgba(248,113,113,.08)",border:"1px solid rgba(248,113,113,.2)",color:"#F87171",cursor:"pointer",fontSize:13,lineHeight:1}}>×</button></td>
+                  </tr>);
+                })}</tbody>
+              </table>
+            }
+            <div style={{marginTop:14,padding:"10px 14px",background:"rgba(248,113,113,.05)",border:"1px solid rgba(248,113,113,.2)",borderRadius:7,fontSize:11,color:"var(--text-muted)",lineHeight:1.6}}>
+              <strong style={{color:"#F87171"}}>📦 Inventario / Backlog:</strong> En la pestaña <strong style={{color:"var(--text)"}}>SKUs</strong> puedes editar el inventario inicial de cada producto. Si el valor es <strong style={{color:"#F87171"}}>negativo</strong>, significa que tienes backlog (compromisos pendientes con cliente final) y esos SKUs se programan automáticamente <strong>al inicio de la cola</strong>, ignorando la heurística.
+            </div>
+          </div>
+        )}
+
         {activeConfigTab==="setup"&&(
           <div>
             <div style={{fontSize:12,color:"var(--text-dim)",background:"var(--surface)",borderRadius:7,padding:"10px 14px",marginBottom:12,lineHeight:1.6}}>Minutos de setup al cambiar de SKU. Edita cualquier celda; 0 ó vacío = sin setup. <span style={{color:"#34D399"}}>Verde</span> &lt;30min, <span style={{color:"#FBBF24"}}>Amarillo</span> 30-60min, <span style={{color:"#F87171"}}>Rojo</span> &gt;60min.</div>
@@ -1524,9 +1800,20 @@ Responde en español.`;
         {/* ── TURNOS TAB ────────────────────────────────────── */}
         {activeConfigTab==="shifts"&&(
           <div>
+            {/* Production Calendar */}
+            <div style={{marginBottom:22}}>
+              <div style={{fontSize:11,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",marginBottom:10}}>📅 Calendario de producción</div>
+              <ProductionCalendar
+                line={line}
+                onToggle={(dateStr)=>handleDateOverrideToggle(activeLine, dateStr)}
+                onClear={()=>handleDateOverrideClear(activeLine)}
+                dailyGoals={data.dailyGoals?.[activeLine] || {}}
+              />
+            </div>
+
             {/* Working Days */}
             <div style={{marginBottom:22}}>
-              <div style={{fontSize:11,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",marginBottom:10}}>Días hábiles de producción</div>
+              <div style={{fontSize:11,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",marginBottom:10}}>Patrón semanal — días hábiles por defecto</div>
               <div style={{display:"flex",gap:6}}>
                 {[1,2,3,4,5,6,0].map(day=>{
                   const isActive=(line.workingDays||[]).includes(day);
@@ -1749,10 +2036,9 @@ Responde en español.`;
                 </div>
                 <div style={{fontSize:10,color:"var(--text-dim)",marginTop:4}}>Ejemplo: ${horizonDefault.toLocaleString("es-CO")}</div>
               </div>
-              <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,color:"var(--text-muted)",cursor:"pointer",marginBottom:18}}>
-                <input type="checkbox" checked={horizonReplace} onChange={e=>setHorizonReplace(e.target.checked)} style={{accentColor:"#F59E0B"}}/>
-                Reemplazar metas existentes (si no marcas, solo se llenan días vacíos)
-              </label>
+              <div style={{padding:"10px 14px",background:"rgba(56,189,248,.06)",border:"1px solid rgba(56,189,248,.2)",borderRadius:6,fontSize:11,color:"var(--text-muted)",lineHeight:1.5,marginBottom:18}}>
+                <strong style={{color:"#38BDF8"}}>ℹ Solo agrega días nuevos.</strong> No reemplaza las metas existentes. Para borrar metas individuales, usa el botón × en la tabla. Días no productivos (según calendario) se omiten automáticamente.
+              </div>
               <div style={{display:"flex",gap:10,justifyContent:"flex-end"}}>
                 <button onClick={()=>setShowHorizonModal(false)} style={{padding:"7px 16px",borderRadius:5,background:"transparent",border:"1px solid var(--border-2)",color:"var(--text-muted)",cursor:"pointer",fontSize:12,fontFamily:"'DM Mono',monospace"}}>Cancelar</button>
                 <button onClick={handleApplyHorizon} style={{padding:"7px 16px",borderRadius:5,background:"rgba(245,158,11,.15)",border:"1px solid rgba(245,158,11,.3)",color:"#F59E0B",cursor:"pointer",fontSize:12,fontFamily:"'DM Mono',monospace"}}>Generar metas</button>
