@@ -1381,7 +1381,12 @@ Responde en español.`;
     const { batches } = schedule;
     if (!batches.length) return <div style={{color:"var(--text-dim)",textAlign:"center",padding:"40px 0",fontSize:13}}>Sin órdenes para esta línea.</div>;
 
-    const now  = Date.now();
+    // Gantt time axis: start at planStart (if set), or fall back to first scheduled batch.
+    // Never earlier than Date.now() - 1h (so we still see "now" as reference when no future planning).
+    const realNow = Date.now();
+    const firstBatchStart = Math.min(...batches.map(b => (b.ops[0]?.setupStart?.getTime?.() || b.startTime.getTime())));
+    const axisAnchor = planStartActive ? Math.min(planStartMs, firstBatchStart) : realNow;
+    const now  = axisAnchor;
     const maxT = Math.max(...batches.map(b=>b.endTime.getTime()), now + 3600000*20);
     const span = maxT - now;
     const multiDay = span > 22*3600000;
