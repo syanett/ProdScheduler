@@ -138,10 +138,10 @@ const INITIAL_DATA = {
         { id: "M07", name: "Cabina Pintura-A", stageId: "S5", capacityPerHour: 15 },
       ],
       skus: [
-        { id: "SKU-C01", name: "Comedor Rústico 4p",   family: "Rústico",   batchSize: 4, color: "#E07B39", stageTimes: { S1: 45, S2: 30, S3:  90, S4: 60, S5: 40 } },
-        { id: "SKU-C02", name: "Comedor Moderno 6p",   family: "Moderno",   batchSize: 6, color: "#3A7BD5", stageTimes: { S1: 35, S2: 25, S3: 110, S4: 50, S5: 35 } },
-        { id: "SKU-C03", name: "Comedor Industrial 4p", family: "Industrial", batchSize: 4, color: "#6B7A8D", stageTimes: { S1: 50, S2: 20, S3:  80, S4: 70, S5: 45 } },
-        { id: "SKU-C04", name: "Comedor Clásico 8p",   family: "Clásico",   batchSize: 8, color: "#C9A84C", stageTimes: { S1: 60, S2: 40, S3: 130, S4: 80, S5: 55 } },
+        { id: "SKU-C01", name: "Comedor Rústico 4p",    family: "Rústico",    batchSize: 4, color: "#E07B39", unitValue: 1200000, stageTimes: { S1: 45, S2: 30, S3:  90, S4: 60, S5: 40 } },
+        { id: "SKU-C02", name: "Comedor Moderno 6p",    family: "Moderno",    batchSize: 6, color: "#3A7BD5", unitValue: 1800000, stageTimes: { S1: 35, S2: 25, S3: 110, S4: 50, S5: 35 } },
+        { id: "SKU-C03", name: "Comedor Industrial 4p", family: "Industrial", batchSize: 4, color: "#6B7A8D", unitValue: 1400000, stageTimes: { S1: 50, S2: 20, S3:  80, S4: 70, S5: 45 } },
+        { id: "SKU-C04", name: "Comedor Clásico 8p",    family: "Clásico",    batchSize: 8, color: "#C9A84C", unitValue: 2500000, stageTimes: { S1: 60, S2: 40, S3: 130, S4: 80, S5: 55 } },
       ],
       forbiddenSequences: [
         { id: "FS1", from: "SKU-C01", to: "SKU-C03", reason: "Cambio de tinte requiere limpieza mayor (2h)" },
@@ -176,10 +176,10 @@ const INITIAL_DATA = {
         { id: "M18", name: "Estación QC",        stageId: "S6", capacityPerHour: 12 },
       ],
       skus: [
-        { id: "SKU-S01", name: "Sofá 3-cuerpos Tela", family: "Tela",    batchSize: 2, color: "#2E86AB", stageTimes: { S1:  60, S2: 45, S3: 120, S4:  90, S5:  80, S6: 20 } },
-        { id: "SKU-S02", name: "Sofá Piel Premium",   family: "Piel",    batchSize: 1, color: "#A23B72", stageTimes: { S1:  90, S2: 60, S3: 180, S4: 110, S5: 120, S6: 30 } },
-        { id: "SKU-S03", name: "Loveseat Tela 2p",    family: "Tela",    batchSize: 3, color: "#48CAE4", stageTimes: { S1:  40, S2: 30, S3:  80, S4:  60, S5:  55, S6: 15 } },
-        { id: "SKU-S04", name: "Seccional Modular",   family: "Modular", batchSize: 1, color: "#F4A261", stageTimes: { S1: 120, S2: 80, S3: 200, S4: 150, S5: 160, S6: 40 } },
+        { id: "SKU-S01", name: "Sofá 3-cuerpos Tela", family: "Tela",    batchSize: 2, color: "#2E86AB", unitValue: 2000000, stageTimes: { S1:  60, S2: 45, S3: 120, S4:  90, S5:  80, S6: 20 } },
+        { id: "SKU-S02", name: "Sofá Piel Premium",   family: "Piel",    batchSize: 1, color: "#A23B72", unitValue: 4500000, stageTimes: { S1:  90, S2: 60, S3: 180, S4: 110, S5: 120, S6: 30 } },
+        { id: "SKU-S03", name: "Loveseat Tela 2p",    family: "Tela",    batchSize: 3, color: "#48CAE4", unitValue: 1500000, stageTimes: { S1:  40, S2: 30, S3:  80, S4:  60, S5:  55, S6: 15 } },
+        { id: "SKU-S04", name: "Seccional Modular",   family: "Modular", batchSize: 1, color: "#F4A261", unitValue: 5500000, stageTimes: { S1: 120, S2: 80, S3: 200, S4: 150, S5: 160, S6: 40 } },
       ],
       forbiddenSequences: [
         { id: "FS1", from: "SKU-S02", to: "SKU-S01", reason: "Piel y tela no comparten herramientas sin descontaminación" },
@@ -194,19 +194,19 @@ const INITIAL_DATA = {
     },
   ],
   orders: [
-    { id: "OV001", lineId: "L1", skuId: "SKU-C01", qty: 12, dueDate: "2026-05-22T18:00", value:  48000, priority: 3, status: "pending"     },
-    { id: "OV002", lineId: "L1", skuId: "SKU-C02", qty: 18, dueDate: "2026-05-21T20:00", value:  72000, priority: 5, status: "pending"     },
-    { id: "OV003", lineId: "L1", skuId: "SKU-C04", qty:  8, dueDate: "2026-05-23T12:00", value:  56000, priority: 2, status: "pending"     },
-    { id: "OV004", lineId: "L1", skuId: "SKU-C03", qty: 16, dueDate: "2026-05-22T09:00", value:  38400, priority: 4, status: "in-progress" },
-    { id: "OV005", lineId: "L2", skuId: "SKU-S01", qty:  4, dueDate: "2026-05-22T17:00", value:  64000, priority: 4, status: "pending"     },
-    { id: "OV006", lineId: "L2", skuId: "SKU-S02", qty:  2, dueDate: "2026-05-21T22:00", value:  95000, priority: 5, status: "pending"     },
-    { id: "OV007", lineId: "L2", skuId: "SKU-S03", qty:  6, dueDate: "2026-05-23T10:00", value:  42000, priority: 3, status: "pending"     },
-    { id: "OV008", lineId: "L2", skuId: "SKU-S04", qty:  1, dueDate: "2026-05-24T09:00", value:  85000, priority: 2, status: "pending"     },
+    { id: "OP001", lineId: "L1", skuId: "SKU-C01", qty: 12, dueDate: "2026-05-22T18:00", value: 14400000, priority: 3, status: "pending"     },
+    { id: "OP002", lineId: "L1", skuId: "SKU-C02", qty: 18, dueDate: "2026-05-21T20:00", value: 32400000, priority: 5, status: "pending"     },
+    { id: "OP003", lineId: "L1", skuId: "SKU-C04", qty:  8, dueDate: "2026-05-23T12:00", value: 20000000, priority: 2, status: "pending"     },
+    { id: "OP004", lineId: "L1", skuId: "SKU-C03", qty: 16, dueDate: "2026-05-22T09:00", value: 22400000, priority: 4, status: "in-progress" },
+    { id: "OP005", lineId: "L2", skuId: "SKU-S01", qty:  4, dueDate: "2026-05-22T17:00", value:  8000000, priority: 4, status: "pending"     },
+    { id: "OP006", lineId: "L2", skuId: "SKU-S02", qty:  2, dueDate: "2026-05-21T22:00", value:  9000000, priority: 5, status: "pending"     },
+    { id: "OP007", lineId: "L2", skuId: "SKU-S03", qty:  6, dueDate: "2026-05-23T10:00", value:  9000000, priority: 3, status: "pending"     },
+    { id: "OP008", lineId: "L2", skuId: "SKU-S04", qty:  1, dueDate: "2026-05-24T09:00", value:  5500000, priority: 2, status: "pending"     },
   ],
-  billingGoal: 500000,
+  billingGoal: 120000000,
   dailyGoals: {
-    "L1": { "2026-05-21": 70000, "2026-05-22": 95000, "2026-05-23": 80000, "2026-05-24": 75000 },
-    "L2": { "2026-05-21": 55000, "2026-05-22": 82000, "2026-05-23": 70000, "2026-05-24": 65000 },
+    "L1": { "2026-05-21": 20000000, "2026-05-22": 25000000, "2026-05-23": 22000000, "2026-05-24": 22000000 },
+    "L2": { "2026-05-21": 12000000, "2026-05-22": 15000000, "2026-05-23": 14000000, "2026-05-24": 13000000 },
   },
 };
 
@@ -254,7 +254,31 @@ function buildSchedule(data, heuristic, lineId, customOrder) {
     // FIFO: no sort
   }
 
-  // --- violation detection ---
+  // --- LOOK-AHEAD RESEQUENCING to respect forbidden sequences ---
+  // After heuristic sort, reorder to avoid prohibited pairs while keeping
+  // heuristic priority as much as possible. If no valid alternative exists,
+  // the violation remains and gets reported.
+  const isForbidden = (fromSkuId, toSkuId) => {
+    if (!fromSkuId || fromSkuId === toSkuId) return false;
+    return !!line.forbiddenSequences.find(f => f.from === fromSkuId && f.to === toSkuId);
+  };
+  if (line.forbiddenSequences?.length && !customOrder) {
+    const remaining = [...batches];
+    const sequenced = [];
+    let prev = null;
+    while (remaining.length) {
+      // Find first batch that doesn't create a forbidden pair with prev
+      let chosenIdx = remaining.findIndex(b => !isForbidden(prev, b.skuId));
+      if (chosenIdx < 0) chosenIdx = 0; // no valid alternative, accept violation
+      const [chosen] = remaining.splice(chosenIdx, 1);
+      sequenced.push(chosen);
+      prev = chosen.skuId;
+    }
+    batches.length = 0;
+    batches.push(...sequenced);
+  }
+
+  // --- violation detection (after resequencing) ---
   const violations = [];
   for (let i = 1; i < batches.length; i++) {
     if (batches[i-1].skuId !== batches[i].skuId) {
@@ -492,13 +516,13 @@ function App() {
     const lineObj = data.lines.find(l => l.id === lineId);
     const stageNames = lineObj.stages.sort((a,b)=>a.order-b.order).map(s => `${s.name} (min)`);
 
-    // SKUs sheet headers + example rows from current data
-    const skusHeader = ["ID","Nombre","Familia","Lote","Color (hex)", ...stageNames];
+    // SKUs sheet headers - NO color (auto-assigned), include unitValue
+    const skusHeader = ["ID","Nombre","Familia","Lote (pzs)","Valor unitario (COP)", ...stageNames];
     const skusRows = lineObj.skus.map(s => {
       const times = lineObj.stages.sort((a,b)=>a.order-b.order).map(st => s.stageTimes?.[st.id] || 0);
-      return [s.id, s.name, s.family, s.batchSize, s.color, ...times];
+      return [s.id, s.name, s.family, s.batchSize, s.unitValue || 0, ...times];
     });
-    if (!skusRows.length) skusRows.push(["SKU-NEW","Producto ejemplo","General",1,"#3A7BD5", ...stageNames.map(()=>30)]);
+    if (!skusRows.length) skusRows.push(["SKU-NEW","Producto ejemplo","General",1,1500000, ...stageNames.map(()=>30)]);
 
     // Machines sheet
     const machinesHeader = ["ID","Nombre","Etapa (ID)","Etapa (nombre — referencia)","Cap./hora"];
@@ -524,16 +548,19 @@ function App() {
       [],
       ["INSTRUCCIONES:"],
       ["1. Edita las hojas 'SKUs' y 'Máquinas' con tus datos."],
-      ["2. En 'Máquinas', usa el ID de etapa (columna C) - no el nombre."],
-      ["3. La columna ID debe ser única dentro de cada hoja."],
-      ["4. Para nuevos registros, deja ID vacío - se autogenerará uno."],
-      ["5. Sube este archivo desde el botón 'Importar Excel' en la app."],
-      ["6. Los tiempos de etapa (SKUs) son minutos por unidad."]
+      ["2. SKUs: la columna 'Valor unitario (COP)' es el precio por pieza."],
+      ["3. Las órdenes de producción calcularán su valor total automáticamente como cantidad × valor unitario."],
+      ["4. El color de cada SKU se asigna automáticamente al importar."],
+      ["5. En 'Máquinas', usa el ID de etapa (columna C) - no el nombre."],
+      ["6. La columna ID debe ser única dentro de cada hoja."],
+      ["7. Para nuevos registros, deja ID vacío - se autogenerará uno."],
+      ["8. Los tiempos de etapa (SKUs) son minutos por unidad."],
+      ["9. Sube este archivo desde el botón 'Importar Excel' en la app."]
     ]);
     XLSX.utils.book_append_sheet(wb, wsSku, "SKUs");
     XLSX.utils.book_append_sheet(wb, wsMch, "Máquinas");
     XLSX.utils.book_append_sheet(wb, wsRef, "Referencia");
-    XLSX.writeFile(wb, `plantilla-${lineObj.name.toLowerCase()}-${new Date().toISOString().slice(0,10)}.xlsx`);
+    XLSX.writeFile(wb, `plantilla-${lineObj.name.toLowerCase().replace(/[^a-z0-9]/g,"-")}-${new Date().toISOString().slice(0,10)}.xlsx`);
   };
 
   const handleImportExcel = (e) => {
@@ -555,27 +582,31 @@ function App() {
           // SKUs sheet
           if (wb.Sheets["SKUs"]) {
             const rows = XLSX.utils.sheet_to_json(wb.Sheets["SKUs"], { header: 1, defval: "" });
-            const header = rows[0] || [];
             for (let i = 1; i < rows.length; i++) {
               const row = rows[i];
               if (!row || row.every(c => c === "" || c == null)) continue;
-              const [id, name, family, batchSize, color, ...times] = row;
+              const [id, name, family, batchSize, unitValue, ...times] = row;
               if (!name || String(name).trim() === "") continue;
               const stageTimes = {};
               stagesOrdered.forEach((s, idx) => {
                 const v = parseInt(times[idx]);
                 stageTimes[s.id] = isNaN(v) ? 0 : Math.max(0, v);
               });
+              const existingIdx = lineObj.skus.findIndex(s => s.id === (id && String(id).trim()));
+              // Reuse existing color if updating; otherwise auto-assign next palette color
+              const assignedColor = existingIdx >= 0
+                ? lineObj.skus[existingIdx].color
+                : nextPaletteColor(lineObj.skus);
               const skuObj = {
                 id: id && String(id).trim() ? String(id).trim() : "SKU-" + (Date.now()%100000 + i),
                 name: String(name).trim(),
                 family: family ? String(family).trim() : "General",
                 batchSize: Math.max(1, parseInt(batchSize) || 1),
-                color: color && String(color).match(/^#[0-9A-Fa-f]{3,8}$/) ? String(color) : "#3A7BD5",
+                unitValue: Math.max(0, parseFloat(unitValue) || 0),
+                color: assignedColor,
                 stageTimes
               };
-              const existing = lineObj.skus.findIndex(s => s.id === skuObj.id);
-              if (existing >= 0) { lineObj.skus[existing] = skuObj; skusUpdated++; }
+              if (existingIdx >= 0) { lineObj.skus[existingIdx] = skuObj; skusUpdated++; }
               else { lineObj.skus.push(skuObj); skusAdded++; }
             }
           }
@@ -735,14 +766,19 @@ function App() {
       d.lines[li].skus[si].stageTimes[stageId] = Math.max(0, parseInt(val)||0);
     }
   }), [mutate]);
+  // Color palette for auto-assignment (10 distinct colors)
+  const SKU_PALETTE = ["#E07B39","#3A7BD5","#6B7A8D","#C9A84C","#2E86AB","#A23B72","#48CAE4","#F4A261","#88B04B","#D4A5A5"];
+  const nextPaletteColor = (existingSkus) => {
+    const used = new Set(existingSkus.map(s => s.color));
+    return SKU_PALETTE.find(c => !used.has(c)) || SKU_PALETTE[existingSkus.length % SKU_PALETTE.length];
+  };
   const handleAddSku = useCallback(lid => mutate(d => {
     const li = d.lines.findIndex(l => l.id === lid);
     const stageTimes = {};
     d.lines[li].stages.forEach(s => { stageTimes[s.id] = 30; });
-    const palette = ["#E07B39","#3A7BD5","#6B7A8D","#C9A84C","#2E86AB","#A23B72","#48CAE4","#F4A261","#88B04B","#D4A5A5"];
     d.lines[li].skus.push({
       id: "SKU-" + (Date.now()%100000), name: "Nuevo SKU", family: "General",
-      batchSize: 1, color: palette[d.lines[li].skus.length % palette.length], stageTimes
+      batchSize: 1, unitValue: 0, color: nextPaletteColor(d.lines[li].skus), stageTimes
     });
   }), [mutate]);
   const handleRemoveSku = useCallback((lid, sid) => mutate(d => {
@@ -785,19 +821,47 @@ function App() {
   const handleUpdateOrder = useCallback((oid, field, val) => mutate(d => {
     const oi = d.orders.findIndex(o => o.id === oid);
     if (oi < 0) return;
-    if (field === "qty" || field === "value")  d.orders[oi][field] = Math.max(0, parseFloat(val)||0);
-    else if (field === "priority")             d.orders[oi].priority = Math.max(1, Math.min(5, parseInt(val)||1));
-    else                                       d.orders[oi][field] = val;
+    const order = d.orders[oi];
+    if (field === "qty") {
+      order.qty = Math.max(0, parseFloat(val)||0);
+      // Auto-recalc value if SKU has unitValue
+      const line = d.lines.find(l => l.id === order.lineId);
+      const sku = line?.skus.find(s => s.id === order.skuId);
+      if (sku?.unitValue > 0) order.value = order.qty * sku.unitValue;
+    } else if (field === "batches") {
+      // Convert batches → qty
+      const line = d.lines.find(l => l.id === order.lineId);
+      const sku = line?.skus.find(s => s.id === order.skuId);
+      const bs = sku?.batchSize || 1;
+      const batches = Math.max(0, parseFloat(val)||0);
+      order.qty = batches * bs;
+      if (sku?.unitValue > 0) order.value = order.qty * sku.unitValue;
+    } else if (field === "skuId") {
+      order.skuId = val;
+      // Recalc value with new SKU's unitValue
+      const line = d.lines.find(l => l.id === order.lineId);
+      const sku = line?.skus.find(s => s.id === val);
+      if (sku?.unitValue > 0) order.value = order.qty * sku.unitValue;
+    } else if (field === "value") {
+      order.value = Math.max(0, parseFloat(val)||0);
+    } else if (field === "priority") {
+      order.priority = Math.max(1, Math.min(5, parseInt(val)||1));
+    } else {
+      order[field] = val;
+    }
   }), [mutate]);
   const handleAddOrder = useCallback(lid => mutate(d => {
     const lineSkus = d.lines.find(l => l.id === lid)?.skus || [];
     if (!lineSkus.length) return;
     const due = new Date(); due.setDate(due.getDate() + 3); due.setHours(17, 0, 0, 0);
     const dueStr = `${due.getFullYear()}-${String(due.getMonth()+1).padStart(2,"0")}-${String(due.getDate()).padStart(2,"0")}T${String(due.getHours()).padStart(2,"0")}:${String(due.getMinutes()).padStart(2,"0")}`;
+    const firstSku = lineSkus[0];
+    const defaultQty = firstSku.batchSize || 4;
+    const defaultValue = (firstSku.unitValue || 0) * defaultQty;
     d.orders.push({
-      id: "OV" + String(d.orders.length + 1).padStart(3,"0") + (Date.now()%100),
-      lineId: lid, skuId: lineSkus[0].id, qty: 4, dueDate: dueStr,
-      value: 20000, priority: 3, status: "pending"
+      id: "OP" + String(d.orders.length + 1).padStart(3,"0") + (Date.now()%100),
+      lineId: lid, skuId: firstSku.id, qty: defaultQty, dueDate: dueStr,
+      value: defaultValue, priority: 3, status: "pending"
     });
   }), [mutate]);
   const handleRemoveOrder = useCallback(oid => mutate(d => {
@@ -868,8 +932,8 @@ Acciones disponibles:
 - {"type":"add_machine","lineId":"L1","machine":{"id":"M99","name":"Nombre","stageId":"S1","capacityPerHour":10}}
 - {"type":"remove_machine","lineId":"L1","machineId":"M99"}
 - {"type":"add_stage","lineId":"L1","stage":{"id":"S9","name":"Nombre","order":6}}
-- {"type":"add_order","order":{"id":"OVxxx","lineId":"L1","skuId":"SKU-X","qty":10,"dueDate":"2026-05-25T17:00","value":50000,"priority":3,"status":"pending"}}
-- {"type":"update_order_priority","orderId":"OV001","priority":5}
+- {"type":"add_order","order":{"id":"OPxxx","lineId":"L1","skuId":"SKU-X","qty":10,"dueDate":"2026-05-25T17:00","value":50000,"priority":3,"status":"pending"}}
+- {"type":"update_order_priority","orderId":"OP001","priority":5}
 - {"type":"change_heuristic","heuristic":"EDD|SPT|WSPT|CR|FIFO"}
 - {"type":"update_billing_goal","target":600000}
 - {"type":"update_sku_stage_time","lineId":"L1","skuId":"SKU-X","stageId":"S1","minutes":45}
@@ -1096,13 +1160,16 @@ Responde en español.`;
         ) : (
         <div style={{overflowX:"auto"}}>
         <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,minWidth:880}}>
-          <thead><tr>{["Orden","SKU","Cant.","Lotes","Fecha compromiso","Valor","Prior.","Estado","Plan",""].map(h=><th key={h} style={{textAlign:"left",fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"7px 10px",borderBottom:"1px solid var(--border)",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
+          <thead><tr>{["Orden","SKU","Cant. (pzs)","Lotes","Fecha compromiso","Valor (COP)","Prior.","Estado","Plan",""].map(h=><th key={h} style={{textAlign:"left",fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"7px 10px",borderBottom:"1px solid var(--border)",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
           <tbody>
             {lineOrders.map(order=>{
               const sku=line.skus.find(s=>s.id===order.skuId);
-              const bc=sku?Math.ceil(order.qty/sku.batchSize):"—";
+              const bs=sku?.batchSize||1;
+              const batches=sku?(order.qty/bs):0;
+              const batchesDisplay=Number.isInteger(batches)?batches:batches.toFixed(2);
               const sb=schedule.batches.find(b=>b.orderId===order.id);
               const sc=STATUS_COLORS[sb?.isLate?"late":order.status]||STATUS_COLORS.pending;
+              const autoCalc=sku?.unitValue>0;
               return (
                 <tr key={order.id} style={{borderBottom:"1px solid var(--surface)"}}>
                   <td style={{padding:"7px 10px",fontFamily:"'DM Mono',monospace",fontSize:11,color:"var(--text-dim)",whiteSpace:"nowrap"}}>{order.id}</td>
@@ -1116,16 +1183,21 @@ Responde en español.`;
                     </div>
                   </td>
                   <td style={{padding:"7px 10px"}}>
-                    <input type="number" min="1" value={order.qty} onChange={e=>handleUpdateOrder(order.id,"qty",e.target.value)} style={{...inputStyle,width:60}}/>
+                    <input type="number" min="0" step="1" value={order.qty} onChange={e=>handleUpdateOrder(order.id,"qty",e.target.value)} style={{...inputStyle,width:64}} title="Cantidad en piezas"/>
                   </td>
-                  <td style={{padding:"7px 10px",fontFamily:"'DM Mono',monospace",fontSize:11,color:"var(--text-dim)"}}>{bc}</td>
                   <td style={{padding:"7px 10px"}}>
-                    <input type="datetime-local" value={dtToInput(order.dueDate)} onChange={e=>handleUpdateOrder(order.id,"dueDate",e.target.value)} style={{...inputStyle,width:175,colorScheme:"dark"}}/>
+                    <div style={{display:"flex",alignItems:"center",gap:4}}>
+                      <input type="number" min="0" step="1" value={Number.isInteger(batches)?batches:""} placeholder={!Number.isInteger(batches)?batchesDisplay:""} onChange={e=>handleUpdateOrder(order.id,"batches",e.target.value)} style={{...inputStyle,width:50}} title={`Lotes (1 lote = ${bs} pzs)`}/>
+                      <span style={{fontSize:9,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",whiteSpace:"nowrap"}}>×{bs}</span>
+                    </div>
+                  </td>
+                  <td style={{padding:"7px 10px"}}>
+                    <input type="datetime-local" value={dtToInput(order.dueDate)} onChange={e=>handleUpdateOrder(order.id,"dueDate",e.target.value)} style={{...inputStyle,width:175,colorScheme:themeMode==="dark"?"dark":"light"}}/>
                   </td>
                   <td style={{padding:"7px 10px"}}>
                     <div style={{display:"flex",alignItems:"center",gap:3}}>
                       <span style={{color:"#34D399",fontSize:11,fontFamily:"'DM Mono',monospace"}}>$</span>
-                      <input type="number" min="0" value={order.value} onChange={e=>handleUpdateOrder(order.id,"value",e.target.value)} style={{...inputStyle,width:80,color:"#34D399"}}/>
+                      <input type="number" min="0" value={order.value} onChange={e=>handleUpdateOrder(order.id,"value",e.target.value)} style={{...inputStyle,width:110,color:"#34D399",fontWeight:autoCalc?400:500}} title={autoCalc?`Auto-calculado: ${order.qty}×$${sku.unitValue.toLocaleString("es-CO")}. Puedes editarlo manualmente.`:"Sin valor unitario en SKU - editar manualmente"}/>
                     </div>
                   </td>
                   <td style={{padding:"7px 10px"}}>
@@ -1143,10 +1215,7 @@ Responde en español.`;
                   <td style={{padding:"7px 10px",fontFamily:"'DM Mono',monospace",fontSize:10}}>
                     {sb?.isLate?<span style={{color:"#F87171"}}>tardío {Math.round(sb.tardiness)}m</span>:sb?<span style={{color:"#34D399"}}>a tiempo</span>:"—"}
                   </td>
-                  <td style={{padding:"7px 6px",whiteSpace:"nowrap"}}>
-                    <button onClick={()=>handleDuplicateOrder(order.id)} title="Duplicar" style={{width:22,height:22,marginRight:3,borderRadius:4,background:"rgba(56,189,248,.08)",border:"1px solid rgba(56,189,248,.2)",color:"#38BDF8",cursor:"pointer",fontSize:11,lineHeight:1}}>⎘</button>
-                    <button onClick={()=>handleRemoveOrder(order.id)} title="Eliminar" style={{width:22,height:22,borderRadius:4,background:"rgba(248,113,113,.08)",border:"1px solid rgba(248,113,113,.2)",color:"#F87171",cursor:"pointer",fontSize:13,lineHeight:1}}>×</button>
-                  </td>
+                  <td style={{padding:"7px 6px",whiteSpace:"nowrap"}}><button onClick={()=>handleDuplicateOrder(order.id)} title="Duplicar" style={{padding:"4px 8px",marginRight:4,borderRadius:4,background:"rgba(56,189,248,.08)",border:"1px solid rgba(56,189,248,.25)",color:"#38BDF8",cursor:"pointer",fontSize:11,fontFamily:"'DM Mono',monospace",lineHeight:1}}>⎘ Duplicar</button><button onClick={()=>{if(confirm(`¿Eliminar la orden ${order.id}? Esta acción no se puede deshacer.`)) handleRemoveOrder(order.id);}} title="Eliminar" style={{padding:"4px 8px",borderRadius:4,background:"rgba(248,113,113,.1)",border:"1px solid rgba(248,113,113,.3)",color:"#F87171",cursor:"pointer",fontSize:11,fontFamily:"'DM Mono',monospace",lineHeight:1,fontWeight:600}}>× Eliminar</button></td>
                 </tr>
               );
             })}
@@ -1357,20 +1426,21 @@ Responde en español.`;
             {line.skus.length===0 ? <div style={{textAlign:"center",padding:"30px",color:"var(--text-dim)",fontSize:13,background:"var(--surface)",borderRadius:8,border:"1px dashed var(--border)"}}>{line.stages.length?"Sin SKUs. Agrega el primero.":"Define etapas antes de agregar SKUs."}</div> : (
             <div style={{overflowX:"auto"}}>
               <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-                <thead><tr>{["Color","ID","Nombre","Familia","Lote"].concat(line.stages.sort((a,b)=>a.order-b.order).map(s=>s.name+" (min)")).concat([""]).map(h=><th key={h} style={{textAlign:"left",fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"7px 8px",borderBottom:"1px solid var(--border)",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
+                <thead><tr>{["Color","ID","Nombre","Familia","Lote","Valor unit. (COP)"].concat(line.stages.sort((a,b)=>a.order-b.order).map(s=>s.name+" (min)")).concat([""]).map(h=><th key={h} style={{textAlign:"left",fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"7px 8px",borderBottom:"1px solid var(--border)",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
                 <tbody>{line.skus.map(sku=>(
                   <tr key={sku.id} style={{borderBottom:"1px solid var(--surface)"}}>
-                    <td style={{padding:"7px 8px"}}><input type="color" value={sku.color} onChange={e=>handleUpdateSku(activeLine,sku.id,"color",e.target.value)} style={{width:28,height:22,border:"1px solid var(--border)",borderRadius:4,background:"transparent",cursor:"pointer",padding:0}}/></td>
+                    <td style={{padding:"7px 8px"}} title="Color asignado automáticamente"><div style={{width:24,height:18,borderRadius:4,background:sku.color,border:"1px solid var(--border)"}}/></td>
                     <td style={{padding:"7px 8px",fontFamily:"'DM Mono',monospace",fontSize:11,color:"var(--text-dim)"}}>{sku.id}</td>
                     <td style={{padding:"7px 8px"}}><input value={sku.name} onChange={e=>handleUpdateSku(activeLine,sku.id,"name",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontSize:12,outline:"none",minWidth:160}}/></td>
                     <td style={{padding:"7px 8px"}}><input value={sku.family} onChange={e=>handleUpdateSku(activeLine,sku.id,"family",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text-muted)",padding:"4px 7px",borderRadius:4,fontSize:11,outline:"none",width:100}}/></td>
                     <td style={{padding:"7px 8px"}}><input type="number" min="1" value={sku.batchSize} onChange={e=>handleUpdateSku(activeLine,sku.id,"batchSize",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:54}}/></td>
+                    <td style={{padding:"7px 8px"}}><div style={{display:"flex",alignItems:"center",gap:3}}><span style={{color:"#34D399",fontSize:11,fontFamily:"'DM Mono',monospace"}}>$</span><input type="number" min="0" value={sku.unitValue||0} onChange={e=>handleUpdateSku(activeLine,sku.id,"unitValue",Math.max(0,parseFloat(e.target.value)||0))} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"#34D399",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:110}} title="Valor por unidad en COP. Las órdenes con este SKU calcularán su valor multiplicando por la cantidad."/></div></td>
                     {line.stages.sort((a,b)=>a.order-b.order).map(s=>(
                       <td key={s.id} style={{padding:"7px 8px"}}>
                         <input type="number" min="0" value={sku.stageTimes?.[s.id]||0} onChange={e=>handleUpdateSkuStageTime(activeLine,sku.id,s.id,e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:54}}/>
                       </td>
                     ))}
-                    <td style={{padding:"7px 6px"}}><button onClick={()=>handleRemoveSku(activeLine,sku.id)} title="Eliminar SKU (limpia matriz setup y secuencias)" style={{width:22,height:22,borderRadius:4,background:"rgba(248,113,113,.08)",border:"1px solid rgba(248,113,113,.2)",color:"#F87171",cursor:"pointer",fontSize:13,lineHeight:1}}>×</button></td>
+                    <td style={{padding:"7px 6px"}}><button onClick={()=>{if(confirm(`¿Eliminar ${sku.name}? Limpia matriz setup y secuencias prohibidas relacionadas.`)) handleRemoveSku(activeLine,sku.id);}} title="Eliminar SKU" style={{padding:"4px 8px",borderRadius:4,background:"rgba(248,113,113,.1)",border:"1px solid rgba(248,113,113,.3)",color:"#F87171",cursor:"pointer",fontSize:11,fontFamily:"'DM Mono',monospace",lineHeight:1,fontWeight:600}}>× Eliminar</button></td>
                   </tr>
                 ))}</tbody>
               </table>
@@ -1722,7 +1792,7 @@ Responde en español.`;
         <div className="body">
           <div className="left">
             <div className="tabs">
-              {[["gantt","Diagrama Gantt"],["orders","Órdenes de Venta"],["metas","Metas"],["config","Configuración"]].map(([id,lbl])=>(
+              {[["gantt","Diagrama Gantt"],["orders","Órdenes de Producción"],["metas","Metas"],["config","Configuración"]].map(([id,lbl])=>(
                 <button key={id} className={`tab-btn ${activeTab===id?"active":""}`} onClick={()=>setActiveTab(id)}>{lbl}</button>
               ))}
             </div>
