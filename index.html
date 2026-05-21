@@ -230,7 +230,7 @@ const INITIAL_DATA = {
 //  SCHEDULER  (shift-aware)
 // ════════════════════════════════════════════════════════════════
 
-function buildSchedule(data, heuristic, lineId, customOrder) {
+function buildSchedule(data, heuristic, lineId, customOrder, startTimeMs) {
   const line = data.lines.find(l => l.id === lineId);
   if (!line) return { batches: [], violations: [], kpis: {} };
   const lineOrders = data.orders.filter(o => o.lineId === lineId);
@@ -382,7 +382,9 @@ function buildSchedule(data, heuristic, lineId, customOrder) {
   }
 
   // --- assign operations ---
-  const nowMs  = Date.now();
+  // nowMs is the planning start: user-chosen start time, clamped so we don't plan in the past
+  const realNow = Date.now();
+  const nowMs   = (typeof startTimeMs === "number" && !isNaN(startTimeMs) && startTimeMs > realNow) ? startTimeMs : realNow;
   const t0     = snapToShift(nowMs, shifts, wd, dOv);
   const mAvail = {}, sAvail = {}, prevSku = {};
   line.machines.forEach(m => { mAvail[m.id] = t0; });
@@ -945,7 +947,16 @@ function App() {
   const [isAiLoading,    setIsAiLoading]    = useState(false);
   const chatRef = useRef(null);
 
-  const schedule = useMemo(() => buildSchedule(data, heuristic, activeLine, customOrder), [data, heuristic, activeLine, customOrder]);
+  // Planning start time: null = use Date.now(), or a future ISO date string ("2026-05-25T08:00")
+  // Stored per-line so the user can plan different lines from different dates.
+  const [planStartByLine, setPlanStartByLine] = useState({});
+  const planStartStr = planStartByLine[activeLine] || "";
+  const planStartMs  = planStartStr ? new Date(planStartStr).getTime() : null;
+  // Clamp: only future starts are honored (past dates fall back to Date.now() in buildSchedule)
+  const planStartActive = planStartMs && planStartMs > Date.now();
+  const setPlanStart = (val) => setPlanStartByLine(p => ({ ...p, [activeLine]: val || "" }));
+
+  const schedule = useMemo(() => buildSchedule(data, heuristic, activeLine, customOrder, planStartMs), [data, heuristic, activeLine, customOrder, planStartMs]);
   const line     = data.lines.find(l => l.id === activeLine);
   useEffect(() => { chatRef.current?.scrollIntoView({ behavior:"smooth" }); }, [aiMessages]);
 
@@ -954,13 +965,15 @@ function App() {
     const res = {};
     data.lines.forEach(l => {
       res[l.id] = {};
-      buildSchedule(data, heuristic, l.id, customOrder).batches.forEach(b => {
+      const lineStartStr = planStartByLine[l.id] || "";
+      const lineStartMs  = lineStartStr ? new Date(lineStartStr).getTime() : null;
+      buildSchedule(data, heuristic, l.id, customOrder, lineStartMs).batches.forEach(b => {
         const key = fmtDayKey(b.endTime);
         res[l.id][key] = (res[l.id][key]||0) + b.value;
       });
     });
     return res;
-  }, [data, heuristic, customOrder]);
+  }, [data, heuristic, customOrder, planStartByLine]);
 
   const todayKey    = fmtDayKey(new Date());
   const todayGoal   = data.dailyGoals?.[activeLine]?.[todayKey] || 0;
@@ -1408,6 +1421,28 @@ Responde en español.`;
 
     return (
       <div>
+        {/* Plan start date picker */}
+        <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",marginBottom:12,padding:"8px 12px",background:"var(--surface)",border:"1px solid var(--border)",borderRadius:7}}>
+          <span style={{fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em"}}>📅 Inicio de producción:</span>
+          <input type="datetime-local"
+            value={planStartStr}
+            min={(()=>{const d=new Date();const z=n=>String(n).padStart(2,"0");return `${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())}T${z(d.getHours())}:${z(d.getMinutes())}`;})()}
+            onChange={e=>setPlanStart(e.target.value)}
+            style={{background:"var(--surface-2)",border:`1px solid ${planStartActive?"rgba(245,158,11,.4)":"var(--border-2)"}`,color:planStartActive?"#F59E0B":"var(--text)",padding:"5px 10px",borderRadius:5,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",colorScheme:themeMode==="dark"?"dark":"light"}}/>
+          {planStartActive ? (
+            <>
+              <span style={{fontSize:10,color:"#F59E0B",fontFamily:"'DM Mono',monospace"}}>
+                Programando desde {new Date(planStartMs).toLocaleString("es-CO",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})}
+              </span>
+              <button onClick={()=>setPlanStart("")} title="Volver a programar desde ahora" style={{marginLeft:"auto",padding:"3px 9px",fontSize:10,borderRadius:4,background:"transparent",border:"1px solid var(--border-2)",color:"var(--text-dim)",cursor:"pointer",fontFamily:"'DM Mono',monospace"}}>↺ Desde ahora</button>
+            </>
+          ) : (
+            <span style={{fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace"}}>
+              Programando desde ahora ({new Date().toLocaleString("es-CO",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})})
+              {planStartStr && <span style={{color:"#FBBF24",marginLeft:6}}>· la fecha elegida es pasada, ignorada</span>}
+            </span>
+          )}
+        </div>
         {hasConstraints && (
           <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:12,padding:"8px 12px",background:"var(--surface)",border:"1px solid var(--border)",borderRadius:7,fontSize:11}}>
             <div style={{color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",fontSize:10,textTransform:"uppercase",letterSpacing:".07em",marginRight:6,alignSelf:"center"}}>Restricciones activas:</div>
@@ -2039,17 +2074,25 @@ Responde en español.`;
                 <button onClick={()=>handleAddShift(activeLine)} style={{fontSize:10,padding:"4px 10px",borderRadius:5,background:"rgba(245,158,11,.1)",border:"1px solid rgba(245,158,11,.3)",color:"#F59E0B",cursor:"pointer"}}>+ Agregar turno</button>
               </div>
               <div style={{display:"flex",flexDirection:"column",gap:8}}>
-                {(line.shifts||[]).map(shift=>(
+                {(line.shifts||[]).map(shift=>{
+                  const shiftDays = shift.days && shift.days.length ? shift.days : (line.workingDays || [1,2,3,4,5]);
+                  const toggleShiftDay = (day) => {
+                    const cur = shiftDays;
+                    const next = cur.includes(day) ? cur.filter(d=>d!==day) : [...cur, day].sort((a,b)=>a-b);
+                    handleShiftUpdate(activeLine, shift.id, "days", next);
+                  };
+                  const isOnAllWorkingDays = (line.workingDays || []).every(d => shiftDays.includes(d));
+                  return (
                   <div key={shift.id} style={{padding:"10px 12px",background:"var(--surface-2)",borderRadius:7,border:`1px solid ${shift.active!==false?"var(--border-2)":"var(--border-alt)"}`,opacity:shift.active!==false?1:.65}}>
                     <div style={{display:"grid",gridTemplateColumns:"1fr auto auto auto 26px",gap:8,alignItems:"center"}}>
                       <TextInput value={shift.name} onCommit={v=>handleShiftUpdate(activeLine,shift.id,"name",v)} style={{background:"var(--surface)",border:"1px solid var(--border-2)",color:"var(--text)",padding:"5px 9px",borderRadius:5,fontSize:12,outline:"none"}}/>
                       <div style={{display:"flex",alignItems:"center",gap:5}}>
                         <span style={{fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace"}}>Inicio</span>
-                        <input type="time" value={shift.start} onChange={e=>handleShiftUpdate(activeLine,shift.id,"start",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border-2)",color:"var(--text)",padding:"4px 6px",borderRadius:5,fontSize:11,outline:"none",fontFamily:"'DM Mono',monospace",width:78,colorScheme:"dark"}}/>
+                        <input type="time" value={shift.start} onChange={e=>handleShiftUpdate(activeLine,shift.id,"start",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border-2)",color:"var(--text)",padding:"4px 6px",borderRadius:5,fontSize:11,outline:"none",fontFamily:"'DM Mono',monospace",width:78,colorScheme:themeMode==="dark"?"dark":"light"}}/>
                       </div>
                       <div style={{display:"flex",alignItems:"center",gap:5}}>
                         <span style={{fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace"}}>Fin</span>
-                        <input type="time" value={shift.end} onChange={e=>handleShiftUpdate(activeLine,shift.id,"end",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border-2)",color:"var(--text)",padding:"4px 6px",borderRadius:5,fontSize:11,outline:"none",fontFamily:"'DM Mono',monospace",width:78,colorScheme:"dark"}}/>
+                        <input type="time" value={shift.end} onChange={e=>handleShiftUpdate(activeLine,shift.id,"end",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border-2)",color:"var(--text)",padding:"4px 6px",borderRadius:5,fontSize:11,outline:"none",fontFamily:"'DM Mono',monospace",width:78,colorScheme:themeMode==="dark"?"dark":"light"}}/>
                       </div>
                       <button onClick={()=>handleShiftUpdate(activeLine,shift.id,"active",shift.active===false)} style={{padding:"4px 10px",borderRadius:5,cursor:"pointer",fontSize:10,fontFamily:"'DM Mono',monospace",
                         background:shift.active!==false?"rgba(52,211,153,.1)":"rgba(248,113,113,.08)",
@@ -2064,8 +2107,36 @@ Responde en español.`;
                       {(() => { const [sh,sm]=shift.start.split(":").map(Number),[eh,em]=shift.end.split(":").map(Number); let h=(eh+em/60)-(sh+sm/60); if(h<0)h+=24; return ` · ${h.toFixed(1)}h`; })()}
                       {shift.end < shift.start && <span style={{color:"#FBBF24",marginLeft:6}}>↪ turno nocturno</span>}
                     </div>
+                    {/* Per-day toggle buttons */}
+                    <div style={{marginTop:8,display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+                      <span style={{fontSize:9,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",marginRight:2}}>Aplica:</span>
+                      {[[1,"Lun"],[2,"Mar"],[3,"Mié"],[4,"Jue"],[5,"Vie"],[6,"Sáb"],[0,"Dom"]].map(([day,lbl])=>{
+                        const isOn = shiftDays.includes(day);
+                        const lineWorks = (line.workingDays||[]).includes(day);
+                        return (
+                          <button key={day}
+                            onClick={()=>toggleShiftDay(day)}
+                            title={lineWorks ? (isOn?`Este turno opera ${lbl}. Click para excluir.`:`Este turno NO opera ${lbl}. Click para incluir.`) : `La línea no opera ${lbl} (configurar en patrón semanal abajo).`}
+                            style={{
+                              padding:"3px 8px",fontSize:10,borderRadius:4,cursor:"pointer",
+                              fontFamily:"'DM Mono',monospace",fontWeight:isOn?600:400,
+                              background: isOn ? (lineWorks?"rgba(52,211,153,.15)":"rgba(245,158,11,.1)") : "transparent",
+                              border: isOn ? `1px solid ${lineWorks?"rgba(52,211,153,.4)":"rgba(245,158,11,.4)"}` : "1px solid var(--border-2)",
+                              color: isOn ? (lineWorks?"#34D399":"#F59E0B") : "var(--text-dim)",
+                              opacity: lineWorks ? 1 : 0.55
+                            }}>
+                            {lbl}
+                          </button>
+                        );
+                      })}
+                      {!isOnAllWorkingDays && (
+                        <button onClick={()=>handleShiftUpdate(activeLine,shift.id,"days",[...(line.workingDays||[1,2,3,4,5])])} title="Aplicar este turno a todos los días que la línea opera" style={{marginLeft:6,padding:"3px 8px",fontSize:9,borderRadius:4,background:"transparent",border:"1px dashed var(--border-2)",color:"var(--text-dim)",cursor:"pointer",fontFamily:"'DM Mono',monospace"}}>
+                          ↺ Igualar a línea
+                        </button>
+                      )}
+                    </div>
                   </div>
-                ))}
+                )})}
               </div>
             </div>
           </div>
