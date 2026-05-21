@@ -54,14 +54,17 @@ const { useState, useEffect, useCallback, useRef, useMemo } = React;
 // ════════════════════════════════════════════════════════════════
 
 function getShiftsForDate(base, activeShifts) {
-  return (activeShifts || []).map(s => {
-    const [sh, sm] = s.start.split(":").map(Number);
-    const [eh, em] = s.end.split(":").map(Number);
-    const start = new Date(base); start.setHours(sh, sm, 0, 0);
-    const end   = new Date(base); end.setHours(eh, em, 0, 0);
-    if (end.getTime() <= start.getTime()) end.setDate(end.getDate() + 1); // overnight
-    return { id: s.id, name: s.name, start: start.getTime(), end: end.getTime() };
-  }).sort((a, b) => a.start - b.start);
+  const dow = base.getDay();
+  return (activeShifts || [])
+    .filter(s => !s.days || !s.days.length || s.days.includes(dow))  // shift applies if no days specified, or this day is in its list
+    .map(s => {
+      const [sh, sm] = s.start.split(":").map(Number);
+      const [eh, em] = s.end.split(":").map(Number);
+      const start = new Date(base); start.setHours(sh, sm, 0, 0);
+      const end   = new Date(base); end.setHours(eh, em, 0, 0);
+      if (end.getTime() <= start.getTime()) end.setDate(end.getDate() + 1); // overnight
+      return { id: s.id, name: s.name, start: start.getTime(), end: end.getTime() };
+    }).sort((a, b) => a.start - b.start);
 }
 
 function isProductiveDay(date, workingDays, dateOverrides) {
@@ -125,10 +128,10 @@ const INITIAL_DATA = {
   lines: [
     {
       id: "L1", name: "Línea Comedores", color: "#C9873A", textColor: "#FFF8F0",
-      workingDays: [1, 2, 3, 4, 5],
+      workingDays: [1, 2, 3, 4, 5, 6],
       shifts: [
-        { id: "T1", name: "Matutino",   start: "06:00", end: "14:00", active: true  },
-        { id: "T2", name: "Vespertino", start: "14:00", end: "22:00", active: true  },
+        { id: "T1", name: "Matutino",   start: "06:00", end: "14:00", active: true, days: [1,2,3,4,5,6] },
+        { id: "T2", name: "Vespertino", start: "14:00", end: "22:00", active: true, days: [1,2,3,4,5]   },
       ],
       stages: [
         { id: "S1", name: "Corte",    order: 1 }, { id: "S2", name: "Lijado",   order: 2 },
@@ -169,7 +172,7 @@ const INITIAL_DATA = {
       id: "L2", name: "Línea Sofás", color: "#3A8C6E", textColor: "#F0FFF8",
       workingDays: [1, 2, 3, 4, 5, 6],
       shifts: [
-        { id: "T1", name: "Matutino", start: "07:00", end: "15:00", active: true },
+        { id: "T1", name: "Matutino", start: "07:00", end: "15:00", active: true, days: [1,2,3,4,5,6] },
       ],
       stages: [
         { id: "S1", name: "Corte Tela",      order: 1 }, { id: "S2", name: "Espumado",        order: 2 },
@@ -309,16 +312,31 @@ function buildSchedule(data, heuristic, lineId, customOrder) {
   // the violation remains and gets reported.
   const isForbidden = (fromSkuId, toSkuId) => {
     if (!fromSkuId || fromSkuId === toSkuId) return false;
-    return !!line.forbiddenSequences.find(f => f.from === fromSkuId && f.to === toSkuId);
+    return !!line.forbiddenSequences?.find(f => f.from === fromSkuId && f.to === toSkuId);
   };
-  if (line.forbiddenSequences?.length && !customOrder) {
+  // Build set of SKU-pairs that priority rules require (from must be before before)
+  const priRules = line.priorityRules || [];
+  // Returns true if placing `skuId` next would violate a priority rule
+  // (i.e., there's still a `from` batch waiting in `remaining` while we're trying to schedule its `before`)
+  const wouldViolatePriority = (skuId, remaining) => {
+    for (const rule of priRules) {
+      if (!rule.from || !rule.before || rule.from === rule.before) continue;
+      if (skuId !== rule.before) continue;
+      if (remaining.some(b => b.skuId === rule.from)) return true;
+    }
+    return false;
+  };
+  if ((line.forbiddenSequences?.length || priRules.length) && !co) {
     const remaining = [...batches];
     const sequenced = [];
     let prev = null;
     while (remaining.length) {
-      // Find first batch that doesn't create a forbidden pair with prev
-      let chosenIdx = remaining.findIndex(b => !isForbidden(prev, b.skuId));
-      if (chosenIdx < 0) chosenIdx = 0; // no valid alternative, accept violation
+      // First, try to pick a batch that satisfies BOTH constraints
+      let chosenIdx = remaining.findIndex(b => !isForbidden(prev, b.skuId) && !wouldViolatePriority(b.skuId, remaining.filter((_,k)=>k!==remaining.indexOf(b))));
+      // If none, relax priority but keep forbidden
+      if (chosenIdx < 0) chosenIdx = remaining.findIndex(b => !isForbidden(prev, b.skuId));
+      // If still none, take any (will record violation)
+      if (chosenIdx < 0) chosenIdx = 0;
       const [chosen] = remaining.splice(chosenIdx, 1);
       sequenced.push(chosen);
       prev = chosen.skuId;
@@ -393,6 +411,73 @@ const STATUS_COLORS = {
 // ════════════════════════════════════════════════════════════════
 //  API KEY MODAL
 // ════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════
+//  UNCONTROLLED INPUT — keeps focus stable while typing
+// ════════════════════════════════════════════════════════════════
+// Maintains its own local state, only notifies parent on blur or Enter.
+// This prevents focus loss when the parent re-renders during typing.
+function NumberInput({ value, onCommit, min, max, step, style, title, placeholder, allowNegative=false }) {
+  const [localVal, setLocalVal] = useState(value);
+  const lastExternalRef = useRef(value);
+  // If external value changes (e.g. due to another field auto-recalc), sync it in
+  useEffect(() => {
+    if (value !== lastExternalRef.current) {
+      lastExternalRef.current = value;
+      setLocalVal(value);
+    }
+  }, [value]);
+  const commit = () => {
+    const parsed = parseFloat(localVal);
+    if (isNaN(parsed)) { setLocalVal(value); return; }
+    let final = parsed;
+    if (typeof min === "number") final = Math.max(min, final);
+    if (typeof max === "number") final = Math.min(max, final);
+    if (!allowNegative && final < 0) final = 0;
+    if (final !== value) onCommit(final);
+    else setLocalVal(value); // re-sync display if final got clamped to same
+  };
+  return (
+    <input
+      type="number"
+      value={localVal}
+      onChange={e => setLocalVal(e.target.value)}
+      onBlur={commit}
+      onKeyDown={e => { if (e.key === "Enter") e.target.blur(); else if (e.key === "Escape") { setLocalVal(value); e.target.blur(); } }}
+      min={min} max={max} step={step}
+      style={style}
+      title={title}
+      placeholder={placeholder}
+    />
+  );
+}
+
+// Same idea for text inputs
+function TextInput({ value, onCommit, style, title, placeholder, type="text" }) {
+  const [localVal, setLocalVal] = useState(value);
+  const lastExternalRef = useRef(value);
+  useEffect(() => {
+    if (value !== lastExternalRef.current) {
+      lastExternalRef.current = value;
+      setLocalVal(value);
+    }
+  }, [value]);
+  const commit = () => {
+    if (localVal !== value) onCommit(localVal);
+  };
+  return (
+    <input
+      type={type}
+      value={localVal}
+      onChange={e => setLocalVal(e.target.value)}
+      onBlur={commit}
+      onKeyDown={e => { if (e.key === "Enter") e.target.blur(); else if (e.key === "Escape") { setLocalVal(value); e.target.blur(); } }}
+      style={style}
+      title={title}
+      placeholder={placeholder}
+    />
+  );
+}
+
 function ApiKeyModal({ currentKey, onSave, onClose, themeMode }) {
   const [val, setVal] = useState(currentKey || "");
   const [show, setShow] = useState(false);
@@ -434,8 +519,7 @@ function ApiKeyModal({ currentKey, onSave, onClose, themeMode }) {
 // ════════════════════════════════════════════════════════════════
 //  PRODUCTION CALENDAR — month grid for selecting working days
 // ════════════════════════════════════════════════════════════════
-function ProductionCalendar({ line, onToggle, onClear, dailyGoals }) {
-  const [viewMonth, setViewMonth] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
+function ProductionCalendar({ line, onToggle, onClear, dailyGoals, viewMonth, setViewMonth }) {
   const todayStr = `${new Date().getFullYear()}-${String(new Date().getMonth()+1).padStart(2,"0")}-${String(new Date().getDate()).padStart(2,"0")}`;
   const overrides = line.dateOverrides || {};
   const wd = line.workingDays || [0,1,2,3,4,5,6];
@@ -580,6 +664,7 @@ function App() {
   const [data,           setData]           = useState(initialData);
   const [lastSaved,      setLastSaved]      = useState(initialMeta.lastSaved || null);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [calendarViewMonth, setCalendarViewMonth] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
   const [themeMode, setThemeMode] = useState(() => {
     try { return localStorage.getItem("prodScheduler_v4_theme") || "dark"; }
     catch (e) { return "dark"; }
@@ -912,23 +997,32 @@ function App() {
   }),[mutate]);
 
   // ─── CRUD: Priority Rules ─────────────────────────────────────
-  const handleUpdatePriorityRule = useCallback((lid, rid, field, val) => mutate(d => {
-    const li = d.lines.findIndex(l => l.id === lid);
-    if (!d.lines[li].priorityRules) d.lines[li].priorityRules = [];
-    const ri = d.lines[li].priorityRules.findIndex(r => r.id === rid);
-    if (ri >= 0) d.lines[li].priorityRules[ri][field] = val;
-  }), [mutate]);
-  const handleAddPriorityRule = useCallback(lid => mutate(d => {
-    const li = d.lines.findIndex(l => l.id === lid);
-    if (!d.lines[li].priorityRules) d.lines[li].priorityRules = [];
-    const skus = d.lines[li].skus;
-    if (skus.length < 2) return;
-    d.lines[li].priorityRules.push({ id: "PR" + (Date.now()%100000), from: skus[0].id, before: skus[1].id, reason: "Sin descripción" });
-  }), [mutate]);
-  const handleRemovePriorityRule = useCallback((lid, rid) => mutate(d => {
-    const li = d.lines.findIndex(l => l.id === lid);
-    if (d.lines[li].priorityRules) d.lines[li].priorityRules = d.lines[li].priorityRules.filter(r => r.id !== rid);
-  }), [mutate]);
+  const handleUpdatePriorityRule = useCallback((lid, rid, field, val) => {
+    mutate(d => {
+      const li = d.lines.findIndex(l => l.id === lid);
+      if (!d.lines[li].priorityRules) d.lines[li].priorityRules = [];
+      const ri = d.lines[li].priorityRules.findIndex(r => r.id === rid);
+      if (ri >= 0) d.lines[li].priorityRules[ri][field] = val;
+    });
+    setCustomOrder(p => ({ ...p, [lid]: null }));
+  }, [mutate]);
+  const handleAddPriorityRule = useCallback(lid => {
+    mutate(d => {
+      const li = d.lines.findIndex(l => l.id === lid);
+      if (!d.lines[li].priorityRules) d.lines[li].priorityRules = [];
+      const skus = d.lines[li].skus;
+      if (skus.length < 2) return;
+      d.lines[li].priorityRules.push({ id: "PR" + (Date.now()%100000), from: skus[0].id, before: skus[1].id, reason: "Sin descripción" });
+    });
+    setCustomOrder(p => ({ ...p, [lid]: null }));
+  }, [mutate]);
+  const handleRemovePriorityRule = useCallback((lid, rid) => {
+    mutate(d => {
+      const li = d.lines.findIndex(l => l.id === lid);
+      if (d.lines[li].priorityRules) d.lines[li].priorityRules = d.lines[li].priorityRules.filter(r => r.id !== rid);
+    });
+    setCustomOrder(p => ({ ...p, [lid]: null }));
+  }, [mutate]);
 
   // Inventory editor for SKUs (signed integer; negative = backlog)
   const handleUpdateInventory = useCallback((lid, sid, val) => mutate(d => {
@@ -1022,16 +1116,23 @@ function App() {
     const fi = d.lines[li].forbiddenSequences.findIndex(f => f.id === fid);
     if (fi >= 0) d.lines[li].forbiddenSequences[fi][field] = val;
   }), [mutate]);
-  const handleAddForbidden = useCallback(lid => mutate(d => {
-    const li = d.lines.findIndex(l => l.id === lid);
-    const skus = d.lines[li].skus;
-    if (skus.length < 2) return;
-    d.lines[li].forbiddenSequences.push({ id: "FS" + (Date.now()%100000), from: skus[0].id, to: skus[1].id, reason: "Sin descripción" });
-  }), [mutate]);
-  const handleRemoveForbidden = useCallback((lid, fid) => mutate(d => {
-    const li = d.lines.findIndex(l => l.id === lid);
-    d.lines[li].forbiddenSequences = d.lines[li].forbiddenSequences.filter(f => f.id !== fid);
-  }), [mutate]);
+  const handleAddForbidden = useCallback(lid => {
+    mutate(d => {
+      const li = d.lines.findIndex(l => l.id === lid);
+      const skus = d.lines[li].skus;
+      if (skus.length < 2) return;
+      d.lines[li].forbiddenSequences.push({ id: "FS" + (Date.now()%100000), from: skus[0].id, to: skus[1].id, reason: "Sin descripción" });
+    });
+    // Clear custom order so the new rule takes effect immediately
+    setCustomOrder(p => ({ ...p, [lid]: null }));
+  }, [mutate]);
+  const handleRemoveForbidden = useCallback((lid, fid) => {
+    mutate(d => {
+      const li = d.lines.findIndex(l => l.id === lid);
+      d.lines[li].forbiddenSequences = d.lines[li].forbiddenSequences.filter(f => f.id !== fid);
+    });
+    setCustomOrder(p => ({ ...p, [lid]: null }));
+  }, [mutate]);
 
   // ─── CRUD: Setup Matrix ───────────────────────────────────────
   const handleUpdateSetup = useCallback((lid, from, to, mins) => mutate(d => {
@@ -1384,7 +1485,7 @@ Responde en español.`;
         ) : (
         <div style={{overflowX:"auto"}}>
         <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,minWidth:880}}>
-          <thead><tr>{["Orden","SKU","Cant. (pzs)","Lotes","Fecha compromiso","Valor (COP)","Prior.","Estado","Plan",""].map(h=><th key={h} style={{textAlign:"left",fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"7px 10px",borderBottom:"1px solid var(--border)",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
+          <thead><tr>{[["Orden",""],["SKU",""],["Cant. (pzs)",""],["Lotes",""],["Fecha compromiso",""],["Valor (COP)",""],["Prior. (5=alta) ⓘ","Escala: 1 = más baja · 5 = más alta. La heurística WSPT (Weighted SPT) y CR (Critical Ratio) usan este valor; las demás heurísticas lo ignoran. El backlog (inventario negativo) y las reglas de prioridad personalizadas tienen precedencia sobre este número."],["Estado",""],["Plan",""],["",""]].map(([h,tip])=><th key={h} title={tip||undefined} style={{textAlign:"left",fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"7px 10px",borderBottom:"1px solid var(--border)",whiteSpace:"nowrap",cursor:tip?"help":undefined}}>{h}</th>)}</tr></thead>
           <tbody>
             {lineOrders.map(order=>{
               const sku=line.skus.find(s=>s.id===order.skuId);
@@ -1407,11 +1508,11 @@ Responde en español.`;
                     </div>
                   </td>
                   <td style={{padding:"7px 10px"}}>
-                    <input type="number" min="0" step="1" value={order.qty} onChange={e=>handleUpdateOrder(order.id,"qty",e.target.value)} style={{...inputStyle,width:64}} title="Cantidad en piezas"/>
+                    <NumberInput value={order.qty} onCommit={v=>handleUpdateOrder(order.id,"qty",v)} min={0} step={1} style={{...inputStyle,width:64}} title="Cantidad en piezas"/>
                   </td>
                   <td style={{padding:"7px 10px"}}>
                     <div style={{display:"flex",alignItems:"center",gap:4}}>
-                      <input type="number" min="0" step="1" value={Number.isInteger(batches)?batches:""} placeholder={!Number.isInteger(batches)?batchesDisplay:""} onChange={e=>handleUpdateOrder(order.id,"batches",e.target.value)} style={{...inputStyle,width:50}} title={`Lotes (1 lote = ${bs} pzs)`}/>
+                      <NumberInput value={Number.isInteger(batches)?batches:""} onCommit={v=>handleUpdateOrder(order.id,"batches",v)} min={0} step={1} placeholder={!Number.isInteger(batches)?batchesDisplay:""} style={{...inputStyle,width:50}} title={`Lotes (1 lote = ${bs} pzs)`}/>
                       <span style={{fontSize:9,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",whiteSpace:"nowrap"}}>×{bs}</span>
                     </div>
                   </td>
@@ -1421,12 +1522,12 @@ Responde en español.`;
                   <td style={{padding:"7px 10px"}}>
                     <div style={{display:"flex",alignItems:"center",gap:3}}>
                       <span style={{color:"#34D399",fontSize:11,fontFamily:"'DM Mono',monospace"}}>$</span>
-                      <input type="number" min="0" value={order.value} onChange={e=>handleUpdateOrder(order.id,"value",e.target.value)} style={{...inputStyle,width:110,color:"#34D399",fontWeight:autoCalc?400:500}} title={autoCalc?`Auto-calculado: ${order.qty}×$${sku.unitValue.toLocaleString("es-CO")}. Puedes editarlo manualmente.`:"Sin valor unitario en SKU - editar manualmente"}/>
+                      <NumberInput value={order.value} onCommit={v=>handleUpdateOrder(order.id,"value",v)} min={0} style={{...inputStyle,width:110,color:"#34D399",fontWeight:autoCalc?400:500}} title={autoCalc?`Auto-calculado: ${order.qty}×$${sku.unitValue.toLocaleString("es-CO")}. Puedes editarlo manualmente.`:"Sin valor unitario en SKU - editar manualmente"}/>
                     </div>
                   </td>
                   <td style={{padding:"7px 10px"}}>
                     <select value={order.priority} onChange={e=>handleUpdateOrder(order.id,"priority",e.target.value)} style={{...inputStyle,width:54}}>
-                      {[1,2,3,4,5].map(n=><option key={n} value={n}>{n}</option>)}
+                      {[[1,"1 — Muy baja"],[2,"2 — Baja"],[3,"3 — Normal"],[4,"4 — Alta"],[5,"5 — Crítica"]].map(([n,lbl])=><option key={n} value={n}>{lbl}</option>)}
                     </select>
                   </td>
                   <td style={{padding:"7px 10px"}}>
@@ -1531,8 +1632,7 @@ Responde en español.`;
                     {!productive&&<span title="Día no productivo según el calendario" style={{marginLeft:6,fontSize:9,background:"rgba(107,122,154,.15)",color:"var(--text-dim)",borderRadius:3,padding:"1px 5px"}}>NO PROD</span>}
                   </td>
                   <td style={{padding:"9px 10px"}}>
-                    <input type="number" value={goal||""} placeholder="—"
-                      onChange={e=>handleDailyGoalUpdate(activeLine,date,e.target.value)}
+                    <NumberInput value={goal||""} onCommit={v=>handleDailyGoalUpdate(activeLine,date,v)} min={0} placeholder="—"
                       style={{width:130,background:"var(--surface-2)",border:"1px solid var(--border-2)",color:"var(--text)",padding:"4px 8px",borderRadius:5,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none"}}/>
                   </td>
                   <td style={{padding:"9px 10px",fontFamily:"'DM Mono',monospace",fontSize:11,color:"#34D399"}}>{proj>0?`$${proj.toLocaleString("es-CO")}`:"—"}</td>
@@ -1598,8 +1698,8 @@ Responde en español.`;
               <tbody>{line.stages.sort((a,b)=>a.order-b.order).map(s=>(
                 <tr key={s.id} style={{borderBottom:"1px solid var(--surface)"}}>
                   <td style={{padding:"7px 10px",fontFamily:"'DM Mono',monospace",fontSize:11,color:"var(--text-dim)"}}>{s.id}</td>
-                  <td style={{padding:"7px 10px"}}><input value={s.name} onChange={e=>handleUpdateStage(activeLine,s.id,"name",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontSize:12,outline:"none",width:"100%",maxWidth:240}}/></td>
-                  <td style={{padding:"7px 10px"}}><input type="number" min="1" value={s.order} onChange={e=>handleUpdateStage(activeLine,s.id,"order",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:56}}/></td>
+                  <td style={{padding:"7px 10px"}}><TextInput value={s.name} onCommit={v=>handleUpdateStage(activeLine,s.id,"name",v)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontSize:12,outline:"none",width:"100%",maxWidth:240}}/></td>
+                  <td style={{padding:"7px 10px"}}><NumberInput value={s.order} onCommit={v=>handleUpdateStage(activeLine,s.id,"order",v)} min={1} step={1} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:56}}/></td>
                   <td style={{padding:"7px 10px"}}>{line.machines.filter(m=>m.stageId===s.id).map(m=><span key={m.id} style={{display:"inline-block",background:"var(--border)",borderRadius:4,padding:"1px 7px",fontSize:10,margin:2,color:"var(--text-muted)"}}>{m.name}</span>)||<span style={{color:"var(--text-dim)",fontSize:10}}>—</span>}</td>
                   <td style={{padding:"7px 6px"}}><button onClick={()=>handleRemoveStage(activeLine,s.id)} title="Eliminar etapa (también borra sus máquinas)" style={{width:22,height:22,borderRadius:4,background:"rgba(248,113,113,.08)",border:"1px solid rgba(248,113,113,.2)",color:"#F87171",cursor:"pointer",fontSize:13,lineHeight:1}}>×</button></td>
                 </tr>
@@ -1628,9 +1728,9 @@ Responde en español.`;
               <tbody>{line.machines.map(m=>(
                 <tr key={m.id} style={{borderBottom:"1px solid var(--surface)"}}>
                   <td style={{padding:"7px 10px",fontFamily:"'DM Mono',monospace",fontSize:11,color:"var(--text-dim)"}}>{m.id}</td>
-                  <td style={{padding:"7px 10px"}}><input value={m.name} onChange={e=>handleUpdateMachine(activeLine,m.id,"name",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontSize:12,outline:"none",width:"100%",maxWidth:200}}/></td>
+                  <td style={{padding:"7px 10px"}}><TextInput value={m.name} onCommit={v=>handleUpdateMachine(activeLine,m.id,"name",v)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontSize:12,outline:"none",width:"100%",maxWidth:200}}/></td>
                   <td style={{padding:"7px 10px"}}><select value={m.stageId} onChange={e=>handleUpdateMachine(activeLine,m.id,"stageId",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"#F59E0B",padding:"4px 7px",borderRadius:4,fontSize:11,outline:"none",fontFamily:"'DM Mono',monospace"}}>{line.stages.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select></td>
-                  <td style={{padding:"7px 10px"}}><input type="number" min="1" value={m.capacityPerHour} onChange={e=>handleUpdateMachine(activeLine,m.id,"capacityPerHour",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:72}}/><span style={{fontSize:10,color:"var(--text-dim)",marginLeft:5,fontFamily:"'DM Mono',monospace"}}>pzs/h</span></td>
+                  <td style={{padding:"7px 10px"}}><NumberInput value={m.capacityPerHour} onCommit={v=>handleUpdateMachine(activeLine,m.id,"capacityPerHour",v)} min={1} step={1} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:72}}/><span style={{fontSize:10,color:"var(--text-dim)",marginLeft:5,fontFamily:"'DM Mono',monospace"}}>pzs/h</span></td>
                   <td style={{padding:"7px 6px"}}><button onClick={()=>handleRemoveMachine(activeLine,m.id)} title="Eliminar" style={{width:22,height:22,borderRadius:4,background:"rgba(248,113,113,.08)",border:"1px solid rgba(248,113,113,.2)",color:"#F87171",cursor:"pointer",fontSize:13,lineHeight:1}}>×</button></td>
                 </tr>
               ))}</tbody>
@@ -1663,14 +1763,14 @@ Responde en español.`;
                   <tr key={sku.id} style={{borderBottom:"1px solid var(--surface)",background:backlog?"rgba(248,113,113,.04)":"transparent"}}>
                     <td style={{padding:"7px 8px"}} title="Color asignado automáticamente"><div style={{width:24,height:18,borderRadius:4,background:sku.color,border:"1px solid var(--border)"}}/></td>
                     <td style={{padding:"7px 8px",fontFamily:"'DM Mono',monospace",fontSize:11,color:"var(--text-dim)"}}>{sku.id}{backlog&&<span title="Backlog - inventario negativo, se programa primero" style={{marginLeft:5,padding:"1px 5px",background:"rgba(248,113,113,.15)",border:"1px solid rgba(248,113,113,.3)",color:"#F87171",borderRadius:3,fontSize:9,fontWeight:700}}>BACKLOG</span>}</td>
-                    <td style={{padding:"7px 8px"}}><input value={sku.name} onChange={e=>handleUpdateSku(activeLine,sku.id,"name",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontSize:12,outline:"none",minWidth:160}}/></td>
-                    <td style={{padding:"7px 8px"}}><input value={sku.family} onChange={e=>handleUpdateSku(activeLine,sku.id,"family",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text-muted)",padding:"4px 7px",borderRadius:4,fontSize:11,outline:"none",width:100}}/></td>
-                    <td style={{padding:"7px 8px"}}><input type="number" min="1" value={sku.batchSize} onChange={e=>handleUpdateSku(activeLine,sku.id,"batchSize",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:54}}/></td>
-                    <td style={{padding:"7px 8px"}}><div style={{display:"flex",alignItems:"center",gap:3}}><span style={{color:"#34D399",fontSize:11,fontFamily:"'DM Mono',monospace"}}>$</span><input type="number" min="0" value={sku.unitValue||0} onChange={e=>handleUpdateSku(activeLine,sku.id,"unitValue",Math.max(0,parseFloat(e.target.value)||0))} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"#34D399",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:110}} title="Valor por unidad en COP."/></div></td>
-                    <td style={{padding:"7px 8px"}}><input type="number" value={inv} onChange={e=>handleUpdateInventory(activeLine,sku.id,e.target.value)} style={{background:"var(--surface)",border:"1px solid "+(backlog?"rgba(248,113,113,.4)":"var(--border)"),color:backlog?"#F87171":"var(--text)",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:72,fontWeight:backlog?700:400}} title={backlog?"⚠ Backlog: el SKU se programa primero, ignorando heurística":"Inventario inicial. Negativo = backlog (cliente final pendiente)."}/></td>
+                    <td style={{padding:"7px 8px"}}><TextInput value={sku.name} onCommit={v=>handleUpdateSku(activeLine,sku.id,"name",v)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontSize:12,outline:"none",minWidth:160}}/></td>
+                    <td style={{padding:"7px 8px"}}><TextInput value={sku.family} onCommit={v=>handleUpdateSku(activeLine,sku.id,"family",v)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text-muted)",padding:"4px 7px",borderRadius:4,fontSize:11,outline:"none",width:100}}/></td>
+                    <td style={{padding:"7px 8px"}}><NumberInput value={sku.batchSize} onCommit={v=>handleUpdateSku(activeLine,sku.id,"batchSize",v)} min={1} step={1} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:54}}/></td>
+                    <td style={{padding:"7px 8px"}}><div style={{display:"flex",alignItems:"center",gap:3}}><span style={{color:"#34D399",fontSize:11,fontFamily:"'DM Mono',monospace"}}>$</span><NumberInput value={sku.unitValue||0} onCommit={v=>handleUpdateSku(activeLine,sku.id,"unitValue",v)} min={0} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"#34D399",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:110}} title="Valor por unidad en COP."/></div></td>
+                    <td style={{padding:"7px 8px"}}><NumberInput value={inv} onCommit={v=>handleUpdateInventory(activeLine,sku.id,v)} step={1} allowNegative={true} style={{background:"var(--surface)",border:"1px solid "+(backlog?"rgba(248,113,113,.4)":"var(--border)"),color:backlog?"#F87171":"var(--text)",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:72,fontWeight:backlog?700:400}} title={backlog?"⚠ Backlog: el SKU se programa primero, ignorando heurística":"Inventario inicial. Negativo = backlog (cliente final pendiente)."}/></td>
                     {line.stages.sort((a,b)=>a.order-b.order).map(s=>(
                       <td key={s.id} style={{padding:"7px 8px"}}>
-                        <input type="number" min="0" value={sku.stageTimes?.[s.id]||0} onChange={e=>handleUpdateSkuStageTime(activeLine,sku.id,s.id,e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:54}}/>
+                        <NumberInput value={sku.stageTimes?.[s.id]||0} onCommit={v=>handleUpdateSkuStageTime(activeLine,sku.id,s.id,v)} min={0} step={1} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:54}}/>
                       </td>
                     ))}
                     <td style={{padding:"7px 6px"}}><button onClick={()=>{if(confirm(`¿Eliminar ${sku.name}? Limpia matriz setup y secuencias prohibidas relacionadas.`)) handleRemoveSku(activeLine,sku.id);}} title="Eliminar SKU" style={{padding:"4px 8px",borderRadius:4,background:"rgba(248,113,113,.1)",border:"1px solid rgba(248,113,113,.3)",color:"#F87171",cursor:"pointer",fontSize:11,fontFamily:"'DM Mono',monospace",lineHeight:1,fontWeight:600}}>× Eliminar</button></td>
@@ -1709,7 +1809,7 @@ Responde en español.`;
                         <select value={f.to} onChange={e=>handleUpdateForbidden(activeLine,f.id,"to",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontSize:11,outline:"none",minWidth:140,fontFamily:"'DM Mono',monospace"}}>{line.skus.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select>
                       </div>
                     </td>
-                    <td style={{padding:"7px 10px"}}><input value={f.reason} onChange={e=>handleUpdateForbidden(activeLine,f.id,"reason",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontSize:11,outline:"none",width:"100%",minWidth:240}}/></td>
+                    <td style={{padding:"7px 10px"}}><TextInput value={f.reason} onCommit={v=>handleUpdateForbidden(activeLine,f.id,"reason",v)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontSize:11,outline:"none",width:"100%",minWidth:240}}/></td>
                     <td style={{padding:"7px 6px"}}><button onClick={()=>handleRemoveForbidden(activeLine,f.id)} title="Eliminar" style={{width:22,height:22,borderRadius:4,background:"rgba(248,113,113,.08)",border:"1px solid rgba(248,113,113,.2)",color:"#F87171",cursor:"pointer",fontSize:13,lineHeight:1}}>×</button></td>
                   </tr>);
                 })}</tbody>
@@ -1749,7 +1849,7 @@ Responde en español.`;
                         <select value={r.before} onChange={e=>handleUpdatePriorityRule(activeLine,r.id,"before",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontSize:11,outline:"none",minWidth:140,fontFamily:"'DM Mono',monospace"}}>{line.skus.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select>
                       </div>
                     </td>
-                    <td style={{padding:"7px 10px"}}><input value={r.reason} onChange={e=>handleUpdatePriorityRule(activeLine,r.id,"reason",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontSize:11,outline:"none",width:"100%",minWidth:240}}/></td>
+                    <td style={{padding:"7px 10px"}}><TextInput value={r.reason} onCommit={v=>handleUpdatePriorityRule(activeLine,r.id,"reason",v)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontSize:11,outline:"none",width:"100%",minWidth:240}}/></td>
                     <td style={{padding:"7px 6px"}}><button onClick={()=>handleRemovePriorityRule(activeLine,r.id)} title="Eliminar" style={{width:22,height:22,borderRadius:4,background:"rgba(248,113,113,.08)",border:"1px solid rgba(248,113,113,.2)",color:"#F87171",cursor:"pointer",fontSize:13,lineHeight:1}}>×</button></td>
                   </tr>);
                 })}</tbody>
@@ -1779,14 +1879,8 @@ Responde en español.`;
                       const m=line.setupMatrix?.[`${from.id}|${to.id}`]||0;
                       const c=m===0?"var(--text-dim)":m<30?"#34D399":m<60?"#FBBF24":"#F87171";
                       return <td key={to.id} style={{padding:"4px 8px",textAlign:"center"}}>
-                        <input type="number" min="0" value={m||""} placeholder="0"
-                          onChange={e=>handleUpdateSetup(activeLine,from.id,to.id,e.target.value)}
-                          onFocus={e=>e.target.style.background="var(--surface)"}
-                          onBlur={e=>e.target.style.background="transparent"}
-                          style={{width:46,background:"transparent",border:"1px solid transparent",color:c,fontFamily:"'DM Mono',monospace",fontSize:11,textAlign:"center",outline:"none",padding:"2px 4px",borderRadius:3,fontWeight:m>0?600:400,transition:"background .15s"}}
-                          onMouseEnter={e=>{if(document.activeElement!==e.target)e.target.style.borderColor="var(--border-alt)";}}
-                          onMouseLeave={e=>{if(document.activeElement!==e.target)e.target.style.borderColor="transparent";}}
-                        />
+                        <NumberInput value={m||""} onCommit={v=>handleUpdateSetup(activeLine,from.id,to.id,v)} min={0} step={1} placeholder="0"
+                          style={{width:46,background:"transparent",border:"1px solid transparent",color:c,fontFamily:"'DM Mono',monospace",fontSize:11,textAlign:"center",outline:"none",padding:"2px 4px",borderRadius:3,fontWeight:m>0?600:400}}/>
                       </td>;
                     })}
                   </tr>
@@ -1808,6 +1902,8 @@ Responde en español.`;
                 onToggle={(dateStr)=>handleDateOverrideToggle(activeLine, dateStr)}
                 onClear={()=>handleDateOverrideClear(activeLine)}
                 dailyGoals={data.dailyGoals?.[activeLine] || {}}
+                viewMonth={calendarViewMonth}
+                setViewMonth={setCalendarViewMonth}
               />
             </div>
 
@@ -1875,7 +1971,7 @@ Responde en español.`;
                 {(line.shifts||[]).map(shift=>(
                   <div key={shift.id} style={{padding:"10px 12px",background:"var(--surface-2)",borderRadius:7,border:`1px solid ${shift.active!==false?"var(--border-2)":"var(--border-alt)"}`,opacity:shift.active!==false?1:.65}}>
                     <div style={{display:"grid",gridTemplateColumns:"1fr auto auto auto 26px",gap:8,alignItems:"center"}}>
-                      <input value={shift.name} onChange={e=>handleShiftUpdate(activeLine,shift.id,"name",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border-2)",color:"var(--text)",padding:"5px 9px",borderRadius:5,fontSize:12,outline:"none"}}/>
+                      <TextInput value={shift.name} onCommit={v=>handleShiftUpdate(activeLine,shift.id,"name",v)} style={{background:"var(--surface)",border:"1px solid var(--border-2)",color:"var(--text)",padding:"5px 9px",borderRadius:5,fontSize:12,outline:"none"}}/>
                       <div style={{display:"flex",alignItems:"center",gap:5}}>
                         <span style={{fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace"}}>Inicio</span>
                         <input type="time" value={shift.start} onChange={e=>handleShiftUpdate(activeLine,shift.id,"start",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border-2)",color:"var(--text)",padding:"4px 6px",borderRadius:5,fontSize:11,outline:"none",fontFamily:"'DM Mono',monospace",width:78,colorScheme:"dark"}}/>
@@ -2031,7 +2127,7 @@ Responde en español.`;
                 <div style={{fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",marginBottom:4}}>Meta por día (COP)</div>
                 <div style={{display:"flex",alignItems:"center",gap:6}}>
                   <span style={{color:"#34D399",fontFamily:"'DM Mono',monospace",fontSize:14}}>$</span>
-                  <input type="number" min="0" value={horizonDefault} onChange={e=>setHorizonDefault(Math.max(0,parseFloat(e.target.value)||0))} style={{flex:1,background:"var(--surface)",border:"1px solid var(--border-2)",color:"#34D399",padding:"7px 10px",borderRadius:5,fontFamily:"'DM Mono',monospace",fontSize:13,outline:"none"}}/>
+                  <NumberInput value={horizonDefault} onCommit={v=>setHorizonDefault(v)} min={0} style={{flex:1,background:"var(--surface)",border:"1px solid var(--border-2)",color:"#34D399",padding:"7px 10px",borderRadius:5,fontFamily:"'DM Mono',monospace",fontSize:13,outline:"none"}}/>
                   <span style={{fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace"}}>COP / día</span>
                 </div>
                 <div style={{fontSize:10,color:"var(--text-dim)",marginTop:4}}>Ejemplo: ${horizonDefault.toLocaleString("es-CO")}</div>
@@ -2083,10 +2179,10 @@ Responde en español.`;
               ))}
             </div>
             <div className="panel">
-              {activeTab==="gantt"   && <GanttView/>}
-              {activeTab==="orders"  && <OrdersView/>}
-              {activeTab==="metas"   && <MetasView/>}
-              {activeTab==="config"  && <ConfigView/>}
+              {activeTab==="gantt"   && GanttView()}
+              {activeTab==="orders"  && OrdersView()}
+              {activeTab==="metas"   && MetasView()}
+              {activeTab==="config"  && ConfigView()}
             </div>
           </div>
 
