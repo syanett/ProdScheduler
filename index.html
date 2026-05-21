@@ -1,0 +1,1410 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Production Scheduler v4 — CRUD Inline + Completo</title>
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700&family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width: 100%; height: 100%; font-family: 'DM Sans', sans-serif; }
+    #root { width: 100%; height: 100%; }
+    body { background: #0a0e17; color: #d8dce8; -webkit-font-smoothing: antialiased; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <script type="text/babel">
+
+// ════════════════════════════════════════════════════════════════
+//  SHIFT UTILITIES
+// ════════════════════════════════════════════════════════════════
+
+function getShiftsForDate(base, activeShifts) {
+  return (activeShifts || []).map(s => {
+    const [sh, sm] = s.start.split(":").map(Number);
+    const [eh, em] = s.end.split(":").map(Number);
+    const start = new Date(base); start.setHours(sh, sm, 0, 0);
+    const end   = new Date(base); end.setHours(eh, em, 0, 0);
+    if (end.getTime() <= start.getTime()) end.setDate(end.getDate() + 1); // overnight
+    return { id: s.id, name: s.name, start: start.getTime(), end: end.getTime() };
+  }).sort((a, b) => a.start - b.start);
+}
+
+function snapToShift(tMs, shifts, workingDays) {
+  const active = (shifts || []).filter(s => s.active !== false);
+  if (!active.length) return tMs;
+  const wd = workingDays && workingDays.length ? workingDays : [0,1,2,3,4,5,6];
+  // Check if already inside a shift (also check yesterday for overnight shifts)
+  for (let off = -1; off <= 0; off++) {
+    const d = new Date(tMs); d.setDate(d.getDate() + off);
+    const base = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    if (!wd.includes(base.getDay())) continue;
+    for (const sh of getShiftsForDate(base, active))
+      if (sh.start <= tMs && sh.end > tMs) return tMs;
+  }
+  // Find next upcoming shift start
+  for (let off = 0; off < 14; off++) {
+    const d = new Date(tMs); d.setDate(d.getDate() + off);
+    const base = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    if (!wd.includes(base.getDay())) continue;
+    for (const sh of getShiftsForDate(base, active))
+      if (sh.start > tMs) return sh.start;
+  }
+  return tMs;
+}
+
+function addWorkingTime(startMs, durMs, shifts, workingDays) {
+  const active = (shifts || []).filter(s => s.active !== false);
+  if (!active.length || durMs <= 0) return startMs + Math.max(0, durMs);
+  const wd = workingDays && workingDays.length ? workingDays : [0,1,2,3,4,5,6];
+  let t = snapToShift(startMs, active, wd);
+  let rem = durMs, g = 0;
+  while (rem > 0 && g++ < 5000) {
+    let cur = null;
+    for (let off = -1; off <= 0 && !cur; off++) {
+      const d = new Date(t); d.setDate(d.getDate() + off);
+      const base = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+      if (wd.includes(base.getDay()))
+        cur = getShiftsForDate(base, active).find(sh => sh.start <= t && sh.end > t) || null;
+    }
+    if (!cur) { t = snapToShift(t + 60000, active, wd); continue; }
+    const avail = cur.end - t;
+    if (rem <= avail) return t + rem;
+    rem -= avail;
+    t = snapToShift(cur.end + 1000, active, wd);
+  }
+  return t;
+}
+
+// ════════════════════════════════════════════════════════════════
+//  INITIAL DATA
+// ════════════════════════════════════════════════════════════════
+
+const INITIAL_DATA = {
+  lines: [
+    {
+      id: "L1", name: "Línea Comedores", color: "#C9873A", textColor: "#FFF8F0",
+      workingDays: [1, 2, 3, 4, 5],
+      shifts: [
+        { id: "T1", name: "Matutino",   start: "06:00", end: "14:00", active: true  },
+        { id: "T2", name: "Vespertino", start: "14:00", end: "22:00", active: true  },
+      ],
+      stages: [
+        { id: "S1", name: "Corte",    order: 1 }, { id: "S2", name: "Lijado",   order: 2 },
+        { id: "S3", name: "Ensamble", order: 3 }, { id: "S4", name: "Tapizado", order: 4 },
+        { id: "S5", name: "Acabado",  order: 5 },
+      ],
+      machines: [
+        { id: "M01", name: "Sierra CNC-01",    stageId: "S1", capacityPerHour: 20 },
+        { id: "M02", name: "Sierra CNC-02",    stageId: "S1", capacityPerHour: 18 },
+        { id: "M03", name: "Lijadora Belt-A",  stageId: "S2", capacityPerHour: 30 },
+        { id: "M04", name: "Mesa Ensamble-1",  stageId: "S3", capacityPerHour: 12 },
+        { id: "M05", name: "Mesa Ensamble-2",  stageId: "S3", capacityPerHour: 12 },
+        { id: "M06", name: "Tapicería-01",     stageId: "S4", capacityPerHour:  8 },
+        { id: "M07", name: "Cabina Pintura-A", stageId: "S5", capacityPerHour: 15 },
+      ],
+      skus: [
+        { id: "SKU-C01", name: "Comedor Rústico 4p",   family: "Rústico",   batchSize: 4, color: "#E07B39", stageTimes: { S1: 45, S2: 30, S3:  90, S4: 60, S5: 40 } },
+        { id: "SKU-C02", name: "Comedor Moderno 6p",   family: "Moderno",   batchSize: 6, color: "#3A7BD5", stageTimes: { S1: 35, S2: 25, S3: 110, S4: 50, S5: 35 } },
+        { id: "SKU-C03", name: "Comedor Industrial 4p", family: "Industrial", batchSize: 4, color: "#6B7A8D", stageTimes: { S1: 50, S2: 20, S3:  80, S4: 70, S5: 45 } },
+        { id: "SKU-C04", name: "Comedor Clásico 8p",   family: "Clásico",   batchSize: 8, color: "#C9A84C", stageTimes: { S1: 60, S2: 40, S3: 130, S4: 80, S5: 55 } },
+      ],
+      forbiddenSequences: [
+        { id: "FS1", from: "SKU-C01", to: "SKU-C03", reason: "Cambio de tinte requiere limpieza mayor (2h)" },
+        { id: "FS2", from: "SKU-C04", to: "SKU-C01", reason: "Restos de barniz oscuro contaminan acabado claro" },
+      ],
+      setupMatrix: {
+        "SKU-C01|SKU-C02": 20, "SKU-C01|SKU-C03": 90, "SKU-C01|SKU-C04": 30,
+        "SKU-C02|SKU-C01": 20, "SKU-C02|SKU-C03": 40, "SKU-C02|SKU-C04": 25,
+        "SKU-C03|SKU-C01": 90, "SKU-C03|SKU-C02": 40, "SKU-C03|SKU-C04": 35,
+        "SKU-C04|SKU-C01": 60, "SKU-C04|SKU-C02": 25, "SKU-C04|SKU-C03": 35,
+      },
+    },
+    {
+      id: "L2", name: "Línea Sofás", color: "#3A8C6E", textColor: "#F0FFF8",
+      workingDays: [1, 2, 3, 4, 5, 6],
+      shifts: [
+        { id: "T1", name: "Matutino", start: "07:00", end: "15:00", active: true },
+      ],
+      stages: [
+        { id: "S1", name: "Corte Tela",      order: 1 }, { id: "S2", name: "Espumado",        order: 2 },
+        { id: "S3", name: "Costura",         order: 3 }, { id: "S4", name: "Armazón",          order: 4 },
+        { id: "S5", name: "Tapizado Final",  order: 5 }, { id: "S6", name: "Control Calidad",  order: 6 },
+      ],
+      machines: [
+        { id: "M11", name: "Cortadora Tela-01",  stageId: "S1", capacityPerHour: 25 },
+        { id: "M12", name: "Mesa Espuma-A",       stageId: "S2", capacityPerHour: 20 },
+        { id: "M13", name: "Máq. Coser Ind-1",   stageId: "S3", capacityPerHour: 10 },
+        { id: "M14", name: "Máq. Coser Ind-2",   stageId: "S3", capacityPerHour: 10 },
+        { id: "M15", name: "Banco Armazón-1",    stageId: "S4", capacityPerHour:  6 },
+        { id: "M16", name: "Banco Armazón-2",    stageId: "S4", capacityPerHour:  6 },
+        { id: "M17", name: "Mesa Tapiz Final",   stageId: "S5", capacityPerHour:  5 },
+        { id: "M18", name: "Estación QC",        stageId: "S6", capacityPerHour: 12 },
+      ],
+      skus: [
+        { id: "SKU-S01", name: "Sofá 3-cuerpos Tela", family: "Tela",    batchSize: 2, color: "#2E86AB", stageTimes: { S1:  60, S2: 45, S3: 120, S4:  90, S5:  80, S6: 20 } },
+        { id: "SKU-S02", name: "Sofá Piel Premium",   family: "Piel",    batchSize: 1, color: "#A23B72", stageTimes: { S1:  90, S2: 60, S3: 180, S4: 110, S5: 120, S6: 30 } },
+        { id: "SKU-S03", name: "Loveseat Tela 2p",    family: "Tela",    batchSize: 3, color: "#48CAE4", stageTimes: { S1:  40, S2: 30, S3:  80, S4:  60, S5:  55, S6: 15 } },
+        { id: "SKU-S04", name: "Seccional Modular",   family: "Modular", batchSize: 1, color: "#F4A261", stageTimes: { S1: 120, S2: 80, S3: 200, S4: 150, S5: 160, S6: 40 } },
+      ],
+      forbiddenSequences: [
+        { id: "FS1", from: "SKU-S02", to: "SKU-S01", reason: "Piel y tela no comparten herramientas sin descontaminación" },
+        { id: "FS2", from: "SKU-S04", to: "SKU-S03", reason: "Reset de plantillas seccional toma 3h" },
+      ],
+      setupMatrix: {
+        "SKU-S01|SKU-S02": 45, "SKU-S01|SKU-S03": 15, "SKU-S01|SKU-S04": 60,
+        "SKU-S02|SKU-S01": 45, "SKU-S02|SKU-S03": 50, "SKU-S02|SKU-S04": 40,
+        "SKU-S03|SKU-S01": 15, "SKU-S03|SKU-S02": 50, "SKU-S03|SKU-S04": 55,
+        "SKU-S04|SKU-S01": 60, "SKU-S04|SKU-S02": 40, "SKU-S04|SKU-S03": 55,
+      },
+    },
+  ],
+  orders: [
+    { id: "OV001", lineId: "L1", skuId: "SKU-C01", qty: 12, dueDate: "2026-05-22T18:00", value:  48000, priority: 3, status: "pending"     },
+    { id: "OV002", lineId: "L1", skuId: "SKU-C02", qty: 18, dueDate: "2026-05-21T20:00", value:  72000, priority: 5, status: "pending"     },
+    { id: "OV003", lineId: "L1", skuId: "SKU-C04", qty:  8, dueDate: "2026-05-23T12:00", value:  56000, priority: 2, status: "pending"     },
+    { id: "OV004", lineId: "L1", skuId: "SKU-C03", qty: 16, dueDate: "2026-05-22T09:00", value:  38400, priority: 4, status: "in-progress" },
+    { id: "OV005", lineId: "L2", skuId: "SKU-S01", qty:  4, dueDate: "2026-05-22T17:00", value:  64000, priority: 4, status: "pending"     },
+    { id: "OV006", lineId: "L2", skuId: "SKU-S02", qty:  2, dueDate: "2026-05-21T22:00", value:  95000, priority: 5, status: "pending"     },
+    { id: "OV007", lineId: "L2", skuId: "SKU-S03", qty:  6, dueDate: "2026-05-23T10:00", value:  42000, priority: 3, status: "pending"     },
+    { id: "OV008", lineId: "L2", skuId: "SKU-S04", qty:  1, dueDate: "2026-05-24T09:00", value:  85000, priority: 2, status: "pending"     },
+  ],
+  billingGoal: 500000,
+  dailyGoals: {
+    "L1": { "2026-05-21": 70000, "2026-05-22": 95000, "2026-05-23": 80000, "2026-05-24": 75000 },
+    "L2": { "2026-05-21": 55000, "2026-05-22": 82000, "2026-05-23": 70000, "2026-05-24": 65000 },
+  },
+};
+
+// ════════════════════════════════════════════════════════════════
+//  SCHEDULER  (shift-aware)
+// ════════════════════════════════════════════════════════════════
+
+function buildSchedule(data, heuristic, lineId, customOrder) {
+  const line = data.lines.find(l => l.id === lineId);
+  if (!line) return { batches: [], violations: [], kpis: {} };
+  const lineOrders = data.orders.filter(o => o.lineId === lineId);
+  const shifts = line.shifts || [];
+  const wd     = line.workingDays || [0,1,2,3,4,5,6];
+
+  // --- explode orders into batches ---
+  let batches = [];
+  lineOrders.forEach(order => {
+    const sku = line.skus.find(s => s.id === order.skuId);
+    if (!sku) return;
+    const bc = Math.ceil(order.qty / sku.batchSize);
+    for (let b = 0; b < bc; b++) {
+      batches.push({
+        id: `${order.id}-B${b+1}`, orderId: order.id, skuId: order.skuId,
+        skuName: sku.name, skuFamily: sku.family, batchNum: b+1, batchTotal: bc,
+        qty: Math.min(sku.batchSize, order.qty - b * sku.batchSize),
+        dueDate: order.dueDate, priority: order.priority,
+        value: order.value / bc, stageTimes: sku.stageTimes, color: sku.color,
+      });
+    }
+  });
+
+  // --- ordering ---
+  const co = customOrder?.[lineId];
+  if (co) {
+    batches.sort((a, b) => {
+      const ai = co.indexOf(a.id), bi = co.indexOf(b.id);
+      return (ai < 0 ? 9999 : ai) - (bi < 0 ? 9999 : bi);
+    });
+  } else {
+    const tot = b => Object.values(b.stageTimes).reduce((s,v)=>s+v,0);
+    if      (heuristic === "EDD")  batches.sort((a,b) => new Date(a.dueDate) - new Date(b.dueDate));
+    else if (heuristic === "SPT")  batches.sort((a,b) => tot(a) - tot(b));
+    else if (heuristic === "WSPT") batches.sort((a,b) => (b.priority/tot(b)) - (a.priority/tot(a)));
+    else if (heuristic === "CR")   { const now = Date.now(); batches.sort((a,b) => ((new Date(a.dueDate)-now)/tot(a)) - ((new Date(b.dueDate)-now)/tot(b))); }
+    // FIFO: no sort
+  }
+
+  // --- violation detection ---
+  const violations = [];
+  for (let i = 1; i < batches.length; i++) {
+    if (batches[i-1].skuId !== batches[i].skuId) {
+      const f = line.forbiddenSequences.find(fs => fs.from === batches[i-1].skuId && fs.to === batches[i].skuId);
+      if (f) violations.push({ batchId: batches[i].id, message: `Secuencia prohibida: ${batches[i-1].skuName} → ${batches[i].skuName}. ${f.reason}` });
+    }
+  }
+
+  // --- assign operations ---
+  const nowMs  = Date.now();
+  const t0     = snapToShift(nowMs, shifts, wd);
+  const mAvail = {}, sAvail = {}, prevSku = {};
+  line.machines.forEach(m => { mAvail[m.id] = t0; });
+  line.stages.forEach(s   => { sAvail[s.id] = t0; });
+
+  const scheduled = batches.map(batch => {
+    const ops = [];
+    let prevEnd = t0;
+    line.stages.sort((a,b) => a.order - b.order).forEach(stage => {
+      const sms = line.machines.filter(m => m.stageId === stage.id);
+      if (!sms.length) return;
+      const stMins    = (batch.stageTimes[stage.id] || 0) * batch.qty;
+      const setupMins = prevSku[stage.id] && prevSku[stage.id] !== batch.skuId
+        ? (line.setupMatrix[`${prevSku[stage.id]}|${batch.skuId}`] || 0) : 0;
+      const machine   = sms.reduce((best,m) => (mAvail[m.id]||0) < (mAvail[best.id]||0) ? m : best, sms[0]);
+      const earliest  = Math.max(prevEnd, mAvail[machine.id]||0, sAvail[stage.id]||0);
+      const setupStartMs = snapToShift(earliest, shifts, wd);
+      const workStartMs  = setupMins > 0 ? addWorkingTime(setupStartMs, setupMins*60000, shifts, wd) : setupStartMs;
+      const opEndMs      = addWorkingTime(workStartMs, stMins*60000, shifts, wd);
+      mAvail[machine.id] = opEndMs; sAvail[stage.id] = opEndMs;
+      prevSku[stage.id]  = batch.skuId; prevEnd = opEndMs;
+      ops.push({
+        stageId: stage.id, stageName: stage.name,
+        machineId: machine.id, machineName: machine.name,
+        setupTime: setupMins,
+        setupStart: new Date(setupStartMs),
+        startTime:  new Date(workStartMs),
+        endTime:    new Date(opEndMs),
+      });
+    });
+    const finalEnd = ops.length ? ops[ops.length-1].endTime : new Date(nowMs);
+    const tard = Math.max(0, (finalEnd.getTime() - new Date(batch.dueDate).getTime()) / 60000);
+    return { ...batch, ops, startTime: ops[0]?.setupStart||new Date(nowMs), endTime: finalEnd, tardiness: tard, isLate: tard > 0 };
+  });
+
+  const makespan   = scheduled.length ? (Math.max(...scheduled.map(b=>b.endTime.getTime()))-t0)/60000 : 0;
+  const totalSetup = scheduled.reduce((s,b) => s + b.ops.reduce((a,o) => a+o.setupTime, 0), 0);
+  const lateOrders = [...new Set(scheduled.filter(b=>b.isLate).map(b=>b.orderId))].length;
+  return { batches: scheduled, violations, kpis: { makespan: Math.round(makespan), totalSetup: Math.round(totalSetup), lateOrders, totalBatches: scheduled.length } };
+}
+
+// ════════════════════════════════════════════════════════════════
+//  HELPERS
+// ════════════════════════════════════════════════════════════════
+
+const STATUS_COLORS = {
+  pending:      { bg: "rgba(100,116,139,.2)",  text: "#94A3B8" },
+  "in-progress":{ bg: "rgba(56,189,248,.15)",  text: "#38BDF8" },
+  late:         { bg: "rgba(248,113,113,.15)", text: "#F87171" },
+  done:         { bg: "rgba(74,222,128,.15)",  text: "#4ADE80" },
+};
+const DAY_NAMES = ["Dom","Lun","Mar","Mié","Jue","Vie","Sáb"];
+const fmtDayKey = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+
+function PriorityDots({ n }) {
+  return <div style={{display:"flex",gap:3}}>{[1,2,3,4,5].map(i=><div key={i} style={{width:6,height:6,borderRadius:"50%",background:i<=n?"#FBBF24":"#252D3D"}}/>)}</div>;
+}
+
+// ════════════════════════════════════════════════════════════════
+//  APP
+// ════════════════════════════════════════════════════════════════
+
+function App() {
+  // ─── LocalStorage Persistence ───────────────────────────────
+  const STORAGE_KEY = "prodScheduler_v4_data";
+  const STORAGE_META = "prodScheduler_v4_meta";
+  const loadPersisted = () => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      // Sanity check: must have lines and orders
+      if (!parsed.lines || !Array.isArray(parsed.lines) || !Array.isArray(parsed.orders)) return null;
+      return parsed;
+    } catch (e) { console.warn("Could not load saved data:", e); return null; }
+  };
+  const loadPersistedMeta = () => {
+    try { const raw = localStorage.getItem(STORAGE_META); return raw ? JSON.parse(raw) : {}; }
+    catch (e) { return {}; }
+  };
+  const initialData  = loadPersisted() || INITIAL_DATA;
+  const initialMeta  = loadPersistedMeta();
+  const [data,           setData]           = useState(initialData);
+  const [lastSaved,      setLastSaved]      = useState(initialMeta.lastSaved || null);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+
+  // Auto-save: persist data to localStorage on every change (debounced)
+  const saveTimerRef = useRef(null);
+  useEffect(() => {
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+        const now = new Date().toISOString();
+        localStorage.setItem(STORAGE_META, JSON.stringify({ lastSaved: now }));
+        setLastSaved(now);
+      } catch (e) { console.warn("Could not save data:", e); }
+    }, 800); // debounce 800ms so we don't write on every keystroke
+    return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
+  }, [data]);
+
+  const handleResetData = () => {
+    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(STORAGE_META);
+    setData(INITIAL_DATA);
+    setLastSaved(null);
+    setShowResetConfirm(false);
+  };
+  const handleExportData = () => {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `scheduler-backup-${new Date().toISOString().slice(0,10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+  const handleImportData = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const parsed = JSON.parse(ev.target.result);
+        if (!parsed.lines || !Array.isArray(parsed.lines)) { alert("Archivo inválido: no contiene 'lines'."); return; }
+        if (confirm("¿Reemplazar datos actuales con los del archivo? Esta acción no se puede deshacer.")) {
+          setData(parsed);
+        }
+      } catch (err) { alert("Error al leer JSON: " + err.message); }
+    };
+    reader.readAsText(file);
+    e.target.value = ""; // reset input
+  };
+
+  const [activeLine,     setActiveLine]     = useState("L1");
+  const [heuristic,      setHeuristic]      = useState("EDD");
+  const [activeTab,      setActiveTab]      = useState("gantt");
+  const [activeConfigTab,setActiveConfigTab]= useState("stages");
+  const [customOrder,    setCustomOrder]    = useState({ L1: null, L2: null });
+  const [dragId,         setDragId]         = useState(null);
+  const [dragOver,       setDragOver]       = useState(null);
+  const [aiMessages,     setAiMessages]     = useState([{ role:"assistant", content:"Hola. Soy tu asistente de programación.\n\nNuevos comandos disponibles:\n• \"Activa turno nocturno 22:00-06:00 en Comedores\"\n• \"Meta del 22-mayo en Sofás: $120,000\"\n• \"Días hábiles de Comedores: lunes a sábado\"\n• \"Agrega turno nocturno a Comedores\"\n• \"Cambia heurística a WSPT\"\n\nY los anteriores: órdenes, setup, lotes, secuencias, máquinas, etc." }]);
+  const [aiInput,        setAiInput]        = useState("");
+  const [isAiLoading,    setIsAiLoading]    = useState(false);
+  const chatRef = useRef(null);
+
+  const schedule = useMemo(() => buildSchedule(data, heuristic, activeLine, customOrder), [data, heuristic, activeLine, customOrder]);
+  const line     = data.lines.find(l => l.id === activeLine);
+  useEffect(() => { chatRef.current?.scrollIntoView({ behavior:"smooth" }); }, [aiMessages]);
+
+  // Per-day projected value per line
+  const projectedByDay = useMemo(() => {
+    const res = {};
+    data.lines.forEach(l => {
+      res[l.id] = {};
+      buildSchedule(data, heuristic, l.id, customOrder).batches.forEach(b => {
+        const key = fmtDayKey(b.endTime);
+        res[l.id][key] = (res[l.id][key]||0) + b.value;
+      });
+    });
+    return res;
+  }, [data, heuristic, customOrder]);
+
+  const todayKey    = fmtDayKey(new Date());
+  const todayGoal   = data.dailyGoals?.[activeLine]?.[todayKey] || 0;
+  const todayProj   = projectedByDay[activeLine]?.[todayKey] || 0;
+  const todayPct    = todayGoal > 0 ? Math.min(100,(todayProj/todayGoal)*100) : 0;
+  const todayColor  = todayGoal===0?"#6B7A9A":todayPct>=100?"#34D399":todayPct>=70?"#FBBF24":"#F87171";
+  const totalValue  = data.orders.reduce((s,o)=>s+o.value,0);
+  const billingPct  = data.billingGoal>0 ? Math.min(100,(totalValue/data.billingGoal)*100) : 0;
+
+  // ─── Mutation helper ────────────────────────────────────────
+  const mutate = useCallback(fn => setData(prev => { const d=JSON.parse(JSON.stringify(prev)); fn(d); return d; }), []);
+
+  const handleShiftUpdate     = useCallback((lid,sid,field,val) => mutate(d=>{
+    const li=d.lines.findIndex(l=>l.id===lid), si=d.lines[li].shifts.findIndex(s=>s.id===sid);
+    if(si>=0) d.lines[li].shifts[si][field]=val;
+  }),[mutate]);
+
+  const handleAddShift        = useCallback(lid => mutate(d=>{
+    const li=d.lines.findIndex(l=>l.id===lid);
+    d.lines[li].shifts.push({id:"T"+(Date.now()%10000),name:"Nuevo Turno",start:"22:00",end:"06:00",active:false});
+  }),[mutate]);
+
+  const handleRemoveShift     = useCallback((lid,sid) => mutate(d=>{
+    const li=d.lines.findIndex(l=>l.id===lid);
+    d.lines[li].shifts=d.lines[li].shifts.filter(s=>s.id!==sid);
+  }),[mutate]);
+
+  const handleWorkingDayToggle= useCallback((lid,day) => mutate(d=>{
+    const li=d.lines.findIndex(l=>l.id===lid), wd=d.lines[li].workingDays;
+    d.lines[li].workingDays=wd.includes(day)?wd.filter(w=>w!==day):[...wd,day].sort((a,b)=>a-b);
+  }),[mutate]);
+
+  const handleDailyGoalUpdate = useCallback((lid,date,val) => mutate(d=>{
+    if(!d.dailyGoals) d.dailyGoals={};
+    if(!d.dailyGoals[lid]) d.dailyGoals[lid]={};
+    const n=parseFloat(val); if(!isNaN(n)&&n>=0) d.dailyGoals[lid][date]=n;
+  }),[mutate]);
+
+  // ─── CRUD: Stages ─────────────────────────────────────────────
+  const handleUpdateStage = useCallback((lid, sid, field, val) => mutate(d => {
+    const li = d.lines.findIndex(l => l.id === lid);
+    const si = d.lines[li].stages.findIndex(s => s.id === sid);
+    if (si >= 0) d.lines[li].stages[si][field] = field === "order" ? Math.max(1, parseInt(val)||1) : val;
+  }), [mutate]);
+  const handleAddStage = useCallback(lid => mutate(d => {
+    const li = d.lines.findIndex(l => l.id === lid);
+    const maxOrd = d.lines[li].stages.reduce((m, s) => Math.max(m, s.order), 0);
+    d.lines[li].stages.push({ id: "S" + (Date.now()%100000), name: "Nueva Etapa", order: maxOrd + 1 });
+  }), [mutate]);
+  const handleRemoveStage = useCallback((lid, sid) => mutate(d => {
+    const li = d.lines.findIndex(l => l.id === lid);
+    d.lines[li].stages   = d.lines[li].stages.filter(s => s.id !== sid);
+    d.lines[li].machines = d.lines[li].machines.filter(m => m.stageId !== sid);
+    d.lines[li].skus.forEach(s => { if (s.stageTimes) delete s.stageTimes[sid]; });
+  }), [mutate]);
+
+  // ─── CRUD: Machines ───────────────────────────────────────────
+  const handleUpdateMachine = useCallback((lid, mid, field, val) => mutate(d => {
+    const li = d.lines.findIndex(l => l.id === lid);
+    const mi = d.lines[li].machines.findIndex(m => m.id === mid);
+    if (mi >= 0) d.lines[li].machines[mi][field] = field === "capacityPerHour" ? Math.max(1, parseInt(val)||1) : val;
+  }), [mutate]);
+  const handleAddMachine = useCallback(lid => mutate(d => {
+    const li = d.lines.findIndex(l => l.id === lid);
+    const firstStage = d.lines[li].stages[0];
+    d.lines[li].machines.push({ id: "M" + (Date.now()%100000), name: "Nueva Máquina", stageId: firstStage?.id || "", capacityPerHour: 10 });
+  }), [mutate]);
+  const handleRemoveMachine = useCallback((lid, mid) => mutate(d => {
+    const li = d.lines.findIndex(l => l.id === lid);
+    d.lines[li].machines = d.lines[li].machines.filter(m => m.id !== mid);
+  }), [mutate]);
+
+  // ─── CRUD: SKUs ───────────────────────────────────────────────
+  const handleUpdateSku = useCallback((lid, sid, field, val) => mutate(d => {
+    const li = d.lines.findIndex(l => l.id === lid);
+    const si = d.lines[li].skus.findIndex(s => s.id === sid);
+    if (si < 0) return;
+    if (field === "batchSize") d.lines[li].skus[si].batchSize = Math.max(1, parseInt(val)||1);
+    else d.lines[li].skus[si][field] = val;
+  }), [mutate]);
+  const handleUpdateSkuStageTime = useCallback((lid, sid, stageId, val) => mutate(d => {
+    const li = d.lines.findIndex(l => l.id === lid);
+    const si = d.lines[li].skus.findIndex(s => s.id === sid);
+    if (si >= 0) {
+      if (!d.lines[li].skus[si].stageTimes) d.lines[li].skus[si].stageTimes = {};
+      d.lines[li].skus[si].stageTimes[stageId] = Math.max(0, parseInt(val)||0);
+    }
+  }), [mutate]);
+  const handleAddSku = useCallback(lid => mutate(d => {
+    const li = d.lines.findIndex(l => l.id === lid);
+    const stageTimes = {};
+    d.lines[li].stages.forEach(s => { stageTimes[s.id] = 30; });
+    const palette = ["#E07B39","#3A7BD5","#6B7A8D","#C9A84C","#2E86AB","#A23B72","#48CAE4","#F4A261","#88B04B","#D4A5A5"];
+    d.lines[li].skus.push({
+      id: "SKU-" + (Date.now()%100000), name: "Nuevo SKU", family: "General",
+      batchSize: 1, color: palette[d.lines[li].skus.length % palette.length], stageTimes
+    });
+  }), [mutate]);
+  const handleRemoveSku = useCallback((lid, sid) => mutate(d => {
+    const li = d.lines.findIndex(l => l.id === lid);
+    d.lines[li].skus = d.lines[li].skus.filter(s => s.id !== sid);
+    // Clean setup matrix entries
+    Object.keys(d.lines[li].setupMatrix || {}).forEach(k => {
+      if (k.includes(sid)) delete d.lines[li].setupMatrix[k];
+    });
+    // Clean forbidden sequences
+    d.lines[li].forbiddenSequences = d.lines[li].forbiddenSequences.filter(f => f.from !== sid && f.to !== sid);
+  }), [mutate]);
+
+  // ─── CRUD: Forbidden Sequences ────────────────────────────────
+  const handleUpdateForbidden = useCallback((lid, fid, field, val) => mutate(d => {
+    const li = d.lines.findIndex(l => l.id === lid);
+    const fi = d.lines[li].forbiddenSequences.findIndex(f => f.id === fid);
+    if (fi >= 0) d.lines[li].forbiddenSequences[fi][field] = val;
+  }), [mutate]);
+  const handleAddForbidden = useCallback(lid => mutate(d => {
+    const li = d.lines.findIndex(l => l.id === lid);
+    const skus = d.lines[li].skus;
+    if (skus.length < 2) return;
+    d.lines[li].forbiddenSequences.push({ id: "FS" + (Date.now()%100000), from: skus[0].id, to: skus[1].id, reason: "Sin descripción" });
+  }), [mutate]);
+  const handleRemoveForbidden = useCallback((lid, fid) => mutate(d => {
+    const li = d.lines.findIndex(l => l.id === lid);
+    d.lines[li].forbiddenSequences = d.lines[li].forbiddenSequences.filter(f => f.id !== fid);
+  }), [mutate]);
+
+  // ─── CRUD: Setup Matrix ───────────────────────────────────────
+  const handleUpdateSetup = useCallback((lid, from, to, mins) => mutate(d => {
+    const li = d.lines.findIndex(l => l.id === lid);
+    const n = parseInt(mins);
+    if (isNaN(n) || n <= 0) delete d.lines[li].setupMatrix[`${from}|${to}`];
+    else d.lines[li].setupMatrix[`${from}|${to}`] = n;
+  }), [mutate]);
+
+  // ─── CRUD: Orders ─────────────────────────────────────────────
+  const handleUpdateOrder = useCallback((oid, field, val) => mutate(d => {
+    const oi = d.orders.findIndex(o => o.id === oid);
+    if (oi < 0) return;
+    if (field === "qty" || field === "value")  d.orders[oi][field] = Math.max(0, parseFloat(val)||0);
+    else if (field === "priority")             d.orders[oi].priority = Math.max(1, Math.min(5, parseInt(val)||1));
+    else                                       d.orders[oi][field] = val;
+  }), [mutate]);
+  const handleAddOrder = useCallback(lid => mutate(d => {
+    const lineSkus = d.lines.find(l => l.id === lid)?.skus || [];
+    if (!lineSkus.length) return;
+    const due = new Date(); due.setDate(due.getDate() + 3); due.setHours(17, 0, 0, 0);
+    const dueStr = `${due.getFullYear()}-${String(due.getMonth()+1).padStart(2,"0")}-${String(due.getDate()).padStart(2,"0")}T${String(due.getHours()).padStart(2,"0")}:${String(due.getMinutes()).padStart(2,"0")}`;
+    d.orders.push({
+      id: "OV" + String(d.orders.length + 1).padStart(3,"0") + (Date.now()%100),
+      lineId: lid, skuId: lineSkus[0].id, qty: 4, dueDate: dueStr,
+      value: 20000, priority: 3, status: "pending"
+    });
+  }), [mutate]);
+  const handleRemoveOrder = useCallback(oid => mutate(d => {
+    d.orders = d.orders.filter(o => o.id !== oid);
+  }), [mutate]);
+  const handleDuplicateOrder = useCallback(oid => mutate(d => {
+    const o = d.orders.find(x => x.id === oid);
+    if (o) d.orders.push({ ...o, id: o.id + "-c" + (Date.now()%1000), status: "pending" });
+  }), [mutate]);
+
+  // ─── DnD ────────────────────────────────────────────────────
+  const handleBatchDrop = useCallback(targetIdx => {
+    if (!dragId) return;
+    const ids = customOrder[activeLine] || schedule.batches.map(b=>b.id);
+    const nxt=[...ids], fi=nxt.indexOf(dragId);
+    if(fi<0){setDragId(null);setDragOver(null);return;}
+    nxt.splice(fi,1); nxt.splice(targetIdx,0,dragId);
+    setCustomOrder(p=>({...p,[activeLine]:nxt}));
+    setDragId(null); setDragOver(null);
+  },[dragId,customOrder,activeLine,schedule.batches]);
+
+  // ─── AI ─────────────────────────────────────────────────────
+  const sendAI = useCallback(async () => {
+    if(!aiInput.trim()||isAiLoading) return;
+    const userMsg=aiInput.trim(); setAiInput("");
+    setAiMessages(p=>[...p,{role:"user",content:userMsg}]);
+    setIsAiLoading(true);
+    const sys=`Eres experto en programación de producción de muebles. Sistema con 2 líneas: Comedores (L1) y Sofás (L2).
+Estado actual:
+${JSON.stringify({
+  lines:data.lines.map(l=>({id:l.id,name:l.name,workingDays:l.workingDays,shifts:l.shifts,
+    stages:l.stages,machines:l.machines,
+    skus:l.skus.map(s=>({id:s.id,name:s.name,batchSize:s.batchSize,stageTimes:s.stageTimes})),
+    forbiddenSequences:l.forbiddenSequences,setupMatrix:l.setupMatrix})),
+  orders:data.orders,billingGoal:data.billingGoal,dailyGoals:data.dailyGoals
+},null,2)}
+
+Responde SOLO con JSON (sin markdown): {"message":"español","actions":[]}
+
+Acciones disponibles:
+- {"type":"add_forbidden_seq","lineId":"L1","from":"SKU-X","to":"SKU-Y","reason":"motivo"}
+- {"type":"remove_forbidden_seq","lineId":"L1","id":"FS1"}
+- {"type":"update_setup","lineId":"L1","fromSku":"SKU-X","toSku":"SKU-Y","minutes":30}
+- {"type":"update_batch_size","lineId":"L1","skuId":"SKU-X","batchSize":5}
+- {"type":"add_machine","lineId":"L1","machine":{"id":"M99","name":"Nombre","stageId":"S1","capacityPerHour":10}}
+- {"type":"remove_machine","lineId":"L1","machineId":"M99"}
+- {"type":"add_stage","lineId":"L1","stage":{"id":"S9","name":"Nombre","order":6}}
+- {"type":"add_order","order":{"id":"OVxxx","lineId":"L1","skuId":"SKU-X","qty":10,"dueDate":"2026-05-25T17:00","value":50000,"priority":3,"status":"pending"}}
+- {"type":"update_order_priority","orderId":"OV001","priority":5}
+- {"type":"change_heuristic","heuristic":"EDD|SPT|WSPT|CR|FIFO"}
+- {"type":"update_billing_goal","target":600000}
+- {"type":"update_sku_stage_time","lineId":"L1","skuId":"SKU-X","stageId":"S1","minutes":45}
+- {"type":"update_shift","lineId":"L1","shiftId":"T1","field":"start|end|active|name","value":"06:00"}
+- {"type":"add_shift","lineId":"L1","shift":{"id":"T3","name":"Nocturno","start":"22:00","end":"06:00","active":true}}
+- {"type":"remove_shift","lineId":"L1","shiftId":"T2"}
+- {"type":"set_working_days","lineId":"L1","days":[1,2,3,4,5,6]}
+- {"type":"set_daily_goal","lineId":"L1","date":"2026-05-22","amount":120000}
+Responde en español.`;
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,system:sys,messages:[...aiMessages.filter((_,i)=>i>0).map(m=>({role:m.role,content:m.content})),{role:"user",content:userMsg}]})});
+      const raw  = await res.json();
+      const txt  = raw.content?.map(b=>b.text||"").join("")||"{}";
+      let parsed; try{parsed=JSON.parse(txt.replace(/```json|```/g,"").trim());}catch{setAiMessages(p=>[...p,{role:"assistant",content:txt}]);setIsAiLoading(false);return;}
+      if(parsed.actions?.length){
+        let nh=null;
+        setData(prev=>{
+          const d=JSON.parse(JSON.stringify(prev));
+          parsed.actions.forEach(a=>{
+            const li=d.lines.findIndex(l=>l.id===a.lineId);
+            if(a.type==="add_forbidden_seq"&&li>=0)      d.lines[li].forbiddenSequences.push({id:"FS"+Date.now()%10000,from:a.from,to:a.to,reason:a.reason});
+            else if(a.type==="remove_forbidden_seq"&&li>=0) d.lines[li].forbiddenSequences=d.lines[li].forbiddenSequences.filter(f=>f.id!==a.id);
+            else if(a.type==="update_setup"&&li>=0)      d.lines[li].setupMatrix[`${a.fromSku}|${a.toSku}`]=a.minutes;
+            else if(a.type==="update_batch_size"&&li>=0){const si=d.lines[li].skus.findIndex(s=>s.id===a.skuId);if(si>=0)d.lines[li].skus[si].batchSize=a.batchSize;}
+            else if(a.type==="add_machine"&&li>=0)       d.lines[li].machines.push(a.machine);
+            else if(a.type==="remove_machine"&&li>=0)    d.lines[li].machines=d.lines[li].machines.filter(m=>m.id!==a.machineId);
+            else if(a.type==="add_stage"&&li>=0)         d.lines[li].stages.push(a.stage);
+            else if(a.type==="add_order")                d.orders.push(a.order);
+            else if(a.type==="update_order_priority"){const oi=d.orders.findIndex(o=>o.id===a.orderId);if(oi>=0)d.orders[oi].priority=a.priority;}
+            else if(a.type==="change_heuristic")         nh=a.heuristic;
+            else if(a.type==="update_billing_goal")      d.billingGoal=a.target;
+            else if(a.type==="update_sku_stage_time"&&li>=0){const si=d.lines[li].skus.findIndex(s=>s.id===a.skuId);if(si>=0)d.lines[li].skus[si].stageTimes[a.stageId]=a.minutes;}
+            else if(a.type==="update_shift"&&li>=0){const si=d.lines[li].shifts.findIndex(s=>s.id===a.shiftId);if(si>=0)d.lines[li].shifts[si][a.field]=a.value;}
+            else if(a.type==="add_shift"&&li>=0)         d.lines[li].shifts.push(a.shift);
+            else if(a.type==="remove_shift"&&li>=0)      d.lines[li].shifts=d.lines[li].shifts.filter(s=>s.id!==a.shiftId);
+            else if(a.type==="set_working_days"&&li>=0)  d.lines[li].workingDays=a.days;
+            else if(a.type==="set_daily_goal"){if(!d.dailyGoals)d.dailyGoals={};if(!d.dailyGoals[a.lineId])d.dailyGoals[a.lineId]={};d.dailyGoals[a.lineId][a.date]=a.amount;}
+          });
+          return d;
+        });
+        if(nh) setHeuristic(nh);
+      }
+      setAiMessages(p=>[...p,{role:"assistant",content:parsed.message||"Listo."}]);
+    } catch { setAiMessages(p=>[...p,{role:"assistant",content:"Error de conexión."}]); }
+    setIsAiLoading(false);
+  },[aiInput,aiMessages,data,isAiLoading]);
+
+  // ════════════════════════════════════════════════════════════
+  //  GANTT VIEW  (shift bands + DnD sequence panel)
+  // ════════════════════════════════════════════════════════════
+  const GanttView = () => {
+    const { batches } = schedule;
+    if (!batches.length) return <div style={{color:"#6B7A9A",textAlign:"center",padding:"40px 0",fontSize:13}}>Sin órdenes para esta línea.</div>;
+
+    const now  = Date.now();
+    const maxT = Math.max(...batches.map(b=>b.endTime.getTime()), now + 3600000*20);
+    const span = maxT - now;
+    const multiDay = span > 22*3600000;
+
+    // Sorted batch list respecting custom order
+    const ordIds  = customOrder[activeLine] || batches.map(b=>b.id);
+    const ordered = [...batches].sort((a,b)=>(ordIds.indexOf(a.id)<0?9999:ordIds.indexOf(a.id))-(ordIds.indexOf(b.id)<0?9999:ordIds.indexOf(b.id)));
+
+    // Shift-window bands for Gantt background
+    const shiftBands = [];
+    { const active=(line.shifts||[]).filter(s=>s.active!==false); const wd=line.workingDays||[0,1,2,3,4,5,6];
+      let d=new Date(now); d.setHours(0,0,0,0);
+      while(d.getTime()<maxT+86400000){ if(wd.includes(d.getDay())){ getShiftsForDate(d,active).forEach(sh=>{if(sh.end<now||sh.start>maxT)return; const l=Math.max(0,((sh.start-now)/span)*100),r=Math.min(100,((sh.end-now)/span)*100); if(r>l)shiftBands.push({left:l,width:r-l,name:sh.name});}); } d.setDate(d.getDate()+1); }
+    }
+
+    const fmtT = ms => {
+      const d=new Date(ms);
+      if(multiDay) return d.toLocaleDateString("es-MX",{day:"2-digit",month:"short"})+" "+d.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
+      return d.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
+    };
+
+    return (
+      <div>
+        {schedule.violations.length > 0 && (
+          <div style={{display:"flex",gap:10,background:"rgba(248,113,113,.08)",border:"1px solid rgba(248,113,113,.25)",borderRadius:8,padding:"10px 14px",marginBottom:14,fontSize:12}}>
+            <span style={{fontSize:16,flexShrink:0}}>⚠</span>
+            <div>
+              <div style={{color:"#F87171",fontWeight:600,marginBottom:3,fontFamily:"'DM Mono',monospace",fontSize:11,textTransform:"uppercase"}}>Conflictos de secuencia</div>
+              {schedule.violations.map((v,i)=><div key={i} style={{color:"#FCA5A5",fontSize:12,lineHeight:1.5}}>{v.message}</div>)}
+            </div>
+          </div>
+        )}
+
+        {/* ── DnD Sequence Panel ────────────────────────────── */}
+        <div style={{marginBottom:12,padding:"9px 11px",background:"#0E1118",borderRadius:7,border:"1px solid #1A1F2E"}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:7}}>
+            <span style={{fontSize:10,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em"}}>
+              ⠿ Secuencia de lotes — arrastra para reordenar
+            </span>
+            {customOrder[activeLine] && (
+              <button onClick={()=>setCustomOrder(p=>({...p,[activeLine]:null}))} style={{fontSize:10,padding:"2px 9px",borderRadius:4,background:"rgba(245,158,11,.1)",border:"1px solid rgba(245,158,11,.3)",color:"#F59E0B",cursor:"pointer"}}>
+                ↺ Restaurar {heuristic}
+              </button>
+            )}
+          </div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
+            {ordered.map((batch,idx) => (
+              <div key={batch.id} draggable
+                onDragStart={()=>setDragId(batch.id)}
+                onDragOver={e=>{e.preventDefault();setDragOver(idx);}}
+                onDrop={()=>handleBatchDrop(idx)}
+                onDragEnd={()=>{setDragId(null);setDragOver(null);}}
+                style={{display:"flex",alignItems:"center",gap:4,padding:"3px 9px",borderRadius:5,
+                  background:dragId===batch.id?"rgba(245,158,11,.12)":"#141820",
+                  border:dragOver===idx&&dragId!==batch.id?"1px solid #F59E0B":"1px solid #252D3D",
+                  cursor:"grab",opacity:dragId===batch.id?.4:1,fontSize:10,fontFamily:"'DM Mono',monospace",
+                  userSelect:"none",transition:"border-color .1s,opacity .1s"}}>
+                <div style={{width:7,height:7,borderRadius:2,background:batch.color,flexShrink:0}}/>
+                <span style={{color:"#A0AABB"}}>{batch.orderId}-B{batch.batchNum}</span>
+                {batch.isLate&&<span style={{color:"#F87171",fontSize:9}}>▲</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* ── Swimlanes ─────────────────────────────────────── */}
+        <div style={{display:"flex",flexDirection:"column",gap:6}}>
+          {line.stages.sort((a,b)=>a.order-b.order).map(stage => (
+            <div key={stage.id} style={{display:"grid",gridTemplateColumns:"155px 1fr",alignItems:"center",gap:10}}>
+              <div>
+                <div style={{fontSize:12,fontWeight:500}}>{stage.name}</div>
+                <div style={{fontSize:10,color:"#6B7A9A",lineHeight:1.4}}>{line.machines.filter(m=>m.stageId===stage.id).map(m=>m.name).join(", ")}</div>
+              </div>
+              <div style={{position:"relative",height:36,background:"#0E1118",borderRadius:5,border:"1px solid #1A1F2E",overflow:"hidden"}}>
+                {/* shift background bands */}
+                {shiftBands.map((b,i)=>(
+                  <div key={i} style={{position:"absolute",top:0,bottom:0,left:`${b.left}%`,width:`${b.width}%`,background:"rgba(52,211,153,.04)",borderLeft:"1px solid rgba(52,211,153,.07)",pointerEvents:"none"}}/>
+                ))}
+                {/* batch bars */}
+                {ordered.filter(b=>b.ops.some(o=>o.stageId===stage.id)).map(batch=>{
+                  const op=batch.ops.find(o=>o.stageId===stage.id); if(!op) return null;
+                  const barL=op.setupStart.getTime(), barR=op.endTime.getTime(), wkL=op.startTime.getTime();
+                  const left=Math.max(0,((barL-now)/span)*100);
+                  const totalW=Math.max(((barR-barL)/span)*100,1.5);
+                  const setupPct=barR>barL?Math.max(0,((wkL-barL)/(barR-barL))*100):0;
+                  return (
+                    <div key={batch.id} style={{position:"absolute",top:4,height:28,left:`${left}%`,width:`${totalW}%`,display:"flex",borderRadius:4,overflow:"hidden",cursor:"pointer"}}
+                      title={`${batch.skuName} · Lote ${batch.batchNum}/${batch.batchTotal}\nMáq: ${op.machineName}\nSetup: ${op.setupTime}min\n${op.startTime.toLocaleTimeString()} → ${op.endTime.toLocaleTimeString()}`}>
+                      {setupPct>0&&<div style={{width:`${setupPct}%`,background:"repeating-linear-gradient(-45deg,#2A3341,#2A3341 3px,#1A2130 3px,#1A2130 6px)",flexShrink:0}}/>}
+                      <div style={{flex:1,background:batch.color,display:"flex",alignItems:"center",padding:"0 6px",opacity:.92,outline:batch.isLate?"2px solid #F87171":"none",outlineOffset:-1}}>
+                        <span style={{fontSize:9,color:"rgba(255,255,255,.9)",fontWeight:600,fontFamily:"'DM Mono',monospace",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{batch.skuName.split(" ").slice(0,2).join(" ")}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+          {/* time axis */}
+          <div style={{display:"grid",gridTemplateColumns:"155px 1fr",gap:10,marginTop:2}}>
+            <div/>
+            <div style={{position:"relative",height:18}}>
+              {Array.from({length:7}).map((_,i)=>{
+                const t=now+(span/6)*i;
+                return <span key={i} style={{position:"absolute",left:`${(i/6)*100}%`,fontSize:9,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",transform:"translateX(-50%)"}}>{fmtT(t)}</span>;
+              })}
+            </div>
+          </div>
+        </div>
+
+        {/* legend */}
+        <div style={{display:"flex",flexWrap:"wrap",gap:10,marginTop:14,paddingTop:12,borderTop:"1px solid #1A1F2E"}}>
+          <div style={{display:"flex",alignItems:"center",gap:5,fontSize:10,color:"#6B7A9A"}}><div style={{width:20,height:10,background:"repeating-linear-gradient(-45deg,#2A3341,#2A3341 3px,#1A2130 3px,#1A2130 6px)",borderRadius:2}}/>Setup</div>
+          <div style={{display:"flex",alignItems:"center",gap:5,fontSize:10,color:"#6B7A9A"}}><div style={{width:10,height:10,border:"2px solid #F87171",borderRadius:2}}/>Tardanza</div>
+          <div style={{display:"flex",alignItems:"center",gap:5,fontSize:10,color:"#6B7A9A"}}><div style={{width:10,height:10,background:"rgba(52,211,153,.15)",borderRadius:2,border:"1px solid rgba(52,211,153,.2)"}}/>Turno activo</div>
+          {line.skus.map(s=><div key={s.id} style={{display:"flex",alignItems:"center",gap:5,fontSize:10,color:"#6B7A9A"}}><div style={{width:10,height:10,borderRadius:2,background:s.color}}/>{s.name}</div>)}
+        </div>
+      </div>
+    );
+  };
+
+  // ════════════════════════════════════════════════════════════
+  //  ORDERS VIEW
+  // ════════════════════════════════════════════════════════════
+  const OrdersView = () => {
+    const lineOrders=data.orders.filter(o=>o.lineId===activeLine);
+    const inputStyle = {background:"#0E1118",border:"1px solid #1A1F2E",color:"#D8DCE8",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none"};
+    const dtToInput = (s) => { if(!s) return ""; const d = new Date(s); const z = n => String(n).padStart(2,"0"); return `${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())}T${z(d.getHours())}:${z(d.getMinutes())}`; };
+    return (
+      <div>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+          <div style={{fontSize:11,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em"}}>
+            {lineOrders.length} {lineOrders.length===1?"orden":"órdenes"} en {line?.name}
+          </div>
+          <button onClick={()=>handleAddOrder(activeLine)} disabled={!line.skus.length}
+            style={{fontSize:11,padding:"5px 12px",borderRadius:5,background:"rgba(245,158,11,.1)",border:"1px solid rgba(245,158,11,.3)",color:"#F59E0B",cursor:line.skus.length?"pointer":"not-allowed",opacity:line.skus.length?1:.4,fontFamily:"'DM Mono',monospace"}}>
+            + Agregar orden
+          </button>
+        </div>
+        {lineOrders.length===0 ? (
+          <div style={{textAlign:"center",padding:"40px 20px",color:"#6B7A9A",fontSize:13,background:"#0E1118",borderRadius:8,border:"1px dashed #1A1F2E"}}>
+            {line.skus.length ? "Sin órdenes en esta línea. Usa + Agregar orden para empezar." : "Primero configura SKUs en la pestaña Configuración."}
+          </div>
+        ) : (
+        <div style={{overflowX:"auto"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,minWidth:880}}>
+          <thead><tr>{["Orden","SKU","Cant.","Lotes","Fecha compromiso","Valor","Prior.","Estado","Plan",""].map(h=><th key={h} style={{textAlign:"left",fontSize:10,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"7px 10px",borderBottom:"1px solid #1A1F2E",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
+          <tbody>
+            {lineOrders.map(order=>{
+              const sku=line.skus.find(s=>s.id===order.skuId);
+              const bc=sku?Math.ceil(order.qty/sku.batchSize):"—";
+              const sb=schedule.batches.find(b=>b.orderId===order.id);
+              const sc=STATUS_COLORS[sb?.isLate?"late":order.status]||STATUS_COLORS.pending;
+              return (
+                <tr key={order.id} style={{borderBottom:"1px solid #0E1118"}}>
+                  <td style={{padding:"7px 10px",fontFamily:"'DM Mono',monospace",fontSize:11,color:"#6B7A9A",whiteSpace:"nowrap"}}>{order.id}</td>
+                  <td style={{padding:"7px 10px"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:6}}>
+                      <span style={{display:"inline-block",width:8,height:8,borderRadius:2,background:sku?.color||"#252D3D",flexShrink:0}}/>
+                      <select value={order.skuId} onChange={e=>handleUpdateOrder(order.id,"skuId",e.target.value)} style={{...inputStyle,minWidth:150}}>
+                        {line.skus.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+                        {!sku&&<option value={order.skuId}>⚠ {order.skuId} (eliminado)</option>}
+                      </select>
+                    </div>
+                  </td>
+                  <td style={{padding:"7px 10px"}}>
+                    <input type="number" min="1" value={order.qty} onChange={e=>handleUpdateOrder(order.id,"qty",e.target.value)} style={{...inputStyle,width:60}}/>
+                  </td>
+                  <td style={{padding:"7px 10px",fontFamily:"'DM Mono',monospace",fontSize:11,color:"#6B7A9A"}}>{bc}</td>
+                  <td style={{padding:"7px 10px"}}>
+                    <input type="datetime-local" value={dtToInput(order.dueDate)} onChange={e=>handleUpdateOrder(order.id,"dueDate",e.target.value)} style={{...inputStyle,width:175,colorScheme:"dark"}}/>
+                  </td>
+                  <td style={{padding:"7px 10px"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:3}}>
+                      <span style={{color:"#34D399",fontSize:11,fontFamily:"'DM Mono',monospace"}}>$</span>
+                      <input type="number" min="0" value={order.value} onChange={e=>handleUpdateOrder(order.id,"value",e.target.value)} style={{...inputStyle,width:80,color:"#34D399"}}/>
+                    </div>
+                  </td>
+                  <td style={{padding:"7px 10px"}}>
+                    <select value={order.priority} onChange={e=>handleUpdateOrder(order.id,"priority",e.target.value)} style={{...inputStyle,width:54}}>
+                      {[1,2,3,4,5].map(n=><option key={n} value={n}>{n}</option>)}
+                    </select>
+                  </td>
+                  <td style={{padding:"7px 10px"}}>
+                    <select value={order.status} onChange={e=>handleUpdateOrder(order.id,"status",e.target.value)} style={{...inputStyle,width:110,background:sc.bg,color:sc.text,fontWeight:600}}>
+                      <option value="pending">pendiente</option>
+                      <option value="in-progress">en proceso</option>
+                      <option value="done">terminado</option>
+                    </select>
+                  </td>
+                  <td style={{padding:"7px 10px",fontFamily:"'DM Mono',monospace",fontSize:10}}>
+                    {sb?.isLate?<span style={{color:"#F87171"}}>tardío {Math.round(sb.tardiness)}m</span>:sb?<span style={{color:"#34D399"}}>a tiempo</span>:"—"}
+                  </td>
+                  <td style={{padding:"7px 6px",whiteSpace:"nowrap"}}>
+                    <button onClick={()=>handleDuplicateOrder(order.id)} title="Duplicar" style={{width:22,height:22,marginRight:3,borderRadius:4,background:"rgba(56,189,248,.08)",border:"1px solid rgba(56,189,248,.2)",color:"#38BDF8",cursor:"pointer",fontSize:11,lineHeight:1}}>⎘</button>
+                    <button onClick={()=>handleRemoveOrder(order.id)} title="Eliminar" style={{width:22,height:22,borderRadius:4,background:"rgba(248,113,113,.08)",border:"1px solid rgba(248,113,113,.2)",color:"#F87171",cursor:"pointer",fontSize:13,lineHeight:1}}>×</button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        </div>
+        )}
+      </div>
+    );
+  };
+
+  // ════════════════════════════════════════════════════════════
+  //  METAS VIEW  (daily billing goals)
+  // ════════════════════════════════════════════════════════════
+  const MetasView = () => {
+    const lineGoals = data.dailyGoals?.[activeLine] || {};
+    const lineProj  = projectedByDay[activeLine] || {};
+    const allDates  = [...new Set([...Object.keys(lineGoals), ...Object.keys(lineProj)])].sort();
+    if (!allDates.includes(todayKey)) allDates.unshift(todayKey);
+    const maxVal = Math.max(...allDates.map(d=>Math.max(lineGoals[d]||0,lineProj[d]||0)),1);
+
+    return (
+      <div>
+        {/* Header row */}
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:18}}>
+          <div>
+            <div style={{fontSize:13,fontWeight:600,fontFamily:"'Syne',sans-serif"}}>Metas de Facturación Diaria</div>
+            <div style={{fontSize:11,color:"#6B7A9A",marginTop:2}}>{line?.name}</div>
+          </div>
+          <div style={{textAlign:"right",padding:"8px 14px",background:"#0E1118",borderRadius:8,border:"1px solid #1A1F2E"}}>
+            <div style={{fontSize:9,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em"}}>Meta Global</div>
+            <div style={{fontSize:20,fontWeight:700,fontFamily:"'Syne',sans-serif",color:billingPct>=100?"#34D399":billingPct>=70?"#FBBF24":"#F87171",lineHeight:1.1}}>{billingPct.toFixed(0)}%</div>
+            <div style={{height:3,background:"#1A1F2E",borderRadius:2,margin:"5px 0",overflow:"hidden"}}><div style={{height:"100%",width:`${billingPct}%`,background:billingPct>=100?"#34D399":billingPct>=70?"#FBBF24":"#F87171",transition:"width .6s"}}/></div>
+            <div style={{fontSize:10,color:"#6B7A9A",fontFamily:"'DM Mono',monospace"}}>${totalValue.toLocaleString()} / ${data.billingGoal.toLocaleString()}</div>
+          </div>
+        </div>
+
+        {/* Bar chart */}
+        <div style={{display:"flex",gap:6,alignItems:"flex-end",padding:"0 4px 22px",borderBottom:"1px solid #1A1F2E",marginBottom:16,minHeight:140}}>
+          {allDates.map(date => {
+            const goal=lineGoals[date]||0, proj=lineProj[date]||0;
+            const goalH=(goal/maxVal)*100, projH=(proj/maxVal)*100;
+            const pct=goal>0?(proj/goal)*100:null;
+            const c=pct===null?"#6B7A9A":pct>=100?"#34D399":pct>=70?"#FBBF24":"#F87171";
+            const isToday=date===todayKey;
+            const d=new Date(date+"T12:00:00");
+            return (
+              <div key={date} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:3,minWidth:44}}>
+                <div style={{fontSize:9,color:c,fontFamily:"'DM Mono',monospace",fontWeight:600,whiteSpace:"nowrap"}}>
+                  {proj>0?`$${(proj/1000).toFixed(0)}K`:"—"}
+                </div>
+                <div style={{width:"100%",height:90,position:"relative",display:"flex",alignItems:"flex-end"}}>
+                  {goal>0&&<div style={{position:"absolute",left:0,right:0,bottom:0,height:`${goalH}%`,border:"1px dashed rgba(245,158,11,.35)",borderRadius:4,background:"rgba(245,158,11,.04)"}}/>}
+                  <div style={{width:"100%",height:`${Math.max(projH,2)}%`,background:c,borderRadius:"4px 4px 0 0",opacity:.85,transition:"height .4s"}}/>
+                </div>
+                <div style={{fontSize:9,color:isToday?"#F59E0B":"#6B7A9A",textAlign:"center",lineHeight:1.3,fontFamily:"'DM Mono',monospace",fontWeight:isToday?600:400}}>
+                  {d.toLocaleDateString("es-MX",{day:"2-digit",month:"short"})}
+                </div>
+                {goal>0&&<div style={{fontSize:8,color:"rgba(245,158,11,.6)",fontFamily:"'DM Mono',monospace",whiteSpace:"nowrap"}}>meta ${(goal/1000).toFixed(0)}K</div>}
+                {isToday&&<div style={{fontSize:8,background:"rgba(245,158,11,.15)",color:"#F59E0B",borderRadius:3,padding:"1px 4px",fontFamily:"'DM Mono',monospace"}}>HOY</div>}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Editable table */}
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+          <thead><tr>
+            {["Fecha","Meta del día ($)","Proyectado","Cumplimiento",""].map(h=>(
+              <th key={h} style={{textAlign:"left",fontSize:10,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"7px 10px",borderBottom:"1px solid #1A1F2E"}}>{h}</th>
+            ))}
+          </tr></thead>
+          <tbody>
+            {allDates.map(date=>{
+              const goal=lineGoals[date]||0, proj=lineProj[date]||0;
+              const pct=goal>0?Math.min(100,(proj/goal)*100):null;
+              const c=pct===null?"#6B7A9A":pct>=100?"#34D399":pct>=70?"#FBBF24":"#F87171";
+              const isToday=date===todayKey;
+              const d=new Date(date+"T12:00:00");
+              return (
+                <tr key={date} style={{borderBottom:"1px solid #0E1118",background:isToday?"rgba(245,158,11,.025)":"transparent"}}>
+                  <td style={{padding:"9px 10px",fontFamily:"'DM Mono',monospace",fontSize:11}}>
+                    <span style={{color:isToday?"#F59E0B":undefined}}>{d.toLocaleDateString("es-MX",{weekday:"short",day:"2-digit",month:"short"})}</span>
+                    {isToday&&<span style={{marginLeft:6,fontSize:9,background:"rgba(245,158,11,.15)",color:"#F59E0B",borderRadius:3,padding:"1px 5px"}}>HOY</span>}
+                  </td>
+                  <td style={{padding:"9px 10px"}}>
+                    <input type="number" value={goal||""} placeholder="—"
+                      onChange={e=>handleDailyGoalUpdate(activeLine,date,e.target.value)}
+                      style={{width:110,background:"#141820",border:"1px solid #252D3D",color:"#D8DCE8",padding:"4px 8px",borderRadius:5,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none"}}/>
+                  </td>
+                  <td style={{padding:"9px 10px",fontFamily:"'DM Mono',monospace",fontSize:11,color:"#34D399"}}>{proj>0?`$${proj.toLocaleString()}`:"—"}</td>
+                  <td style={{padding:"9px 10px"}}>
+                    {pct!==null?(
+                      <div style={{display:"flex",alignItems:"center",gap:8}}>
+                        <div style={{width:60,height:4,background:"#1A1F2E",borderRadius:2,overflow:"hidden"}}>
+                          <div style={{height:"100%",width:`${pct}%`,background:c,transition:"width .5s"}}/>
+                        </div>
+                        <span style={{fontSize:11,color:c,fontFamily:"'DM Mono',monospace"}}>{pct.toFixed(0)}%</span>
+                      </div>
+                    ):<span style={{color:"#6B7A9A",fontSize:11}}>—</span>}
+                  </td>
+                  <td style={{padding:"9px 10px"}}>
+                    {!lineGoals[date]&&<button onClick={()=>handleDailyGoalUpdate(activeLine,date,80000)} style={{fontSize:10,padding:"2px 8px",borderRadius:4,background:"#1A1F2E",border:"1px solid #252D3D",color:"#6B7A9A",cursor:"pointer"}}>+ Meta</button>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        <div style={{marginTop:12,display:"flex",gap:8,alignItems:"center"}}>
+          <span style={{fontSize:11,color:"#6B7A9A"}}>Agregar fecha:</span>
+          <input type="date" style={{background:"#141820",border:"1px solid #252D3D",color:"#D8DCE8",padding:"4px 8px",borderRadius:5,fontSize:11,outline:"none",cursor:"pointer",colorScheme:"dark"}}
+            onChange={e=>{if(e.target.value&&!lineGoals[e.target.value])handleDailyGoalUpdate(activeLine,e.target.value,80000);}}/>
+        </div>
+      </div>
+    );
+  };
+
+  // ════════════════════════════════════════════════════════════
+  //  CONFIG VIEW  (+ Turnos tab)
+  // ════════════════════════════════════════════════════════════
+  const ConfigView = () => {
+    const subTabs=[["stages","Etapas"],["machines","Máquinas"],["skus","SKUs"],["forbidden","Rutas Prohibidas"],["setup","Matriz Setup"],["shifts","Turnos"]];
+    // Hours in active shifts per day
+    const shiftHrsDay = (line.shifts||[]).filter(s=>s.active!==false).reduce((sum,s)=>{
+      const [sh,sm]=s.start.split(":").map(Number),[eh,em]=s.end.split(":").map(Number);
+      const h=(eh+em/60)-(sh+sm/60); return sum+(h<0?h+24:h);
+    },0);
+
+    return (
+      <div>
+        <div style={{display:"flex",gap:4,marginBottom:14,flexWrap:"wrap"}}>
+          {subTabs.map(([id,lbl])=>(
+            <button key={id} onClick={()=>setActiveConfigTab(id)} style={{padding:"5px 12px",borderRadius:5,fontSize:11,fontFamily:"'DM Mono',monospace",color:activeConfigTab===id?"#F59E0B":"#6B7A9A",background:activeConfigTab===id?"#1A1F2E":"none",border:activeConfigTab===id?"1px solid #252D3D":"1px solid transparent",cursor:"pointer"}}>{lbl}</button>
+          ))}
+        </div>
+
+        {activeConfigTab==="stages"&&(
+          <div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+              <div style={{fontSize:11,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em"}}>{line.stages.length} etapas en {line?.name}</div>
+              <button onClick={()=>handleAddStage(activeLine)} style={{fontSize:11,padding:"5px 12px",borderRadius:5,background:"rgba(245,158,11,.1)",border:"1px solid rgba(245,158,11,.3)",color:"#F59E0B",cursor:"pointer",fontFamily:"'DM Mono',monospace"}}>+ Agregar etapa</button>
+            </div>
+            {line.stages.length===0 ? <div style={{textAlign:"center",padding:"30px",color:"#6B7A9A",fontSize:13,background:"#0E1118",borderRadius:8,border:"1px dashed #1A1F2E"}}>Sin etapas. Agrega la primera para empezar a definir el ruteo.</div> : (
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+              <thead><tr>{["ID","Etapa","Orden","Máquinas",""].map(h=><th key={h} style={{textAlign:"left",fontSize:10,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"7px 10px",borderBottom:"1px solid #1A1F2E"}}>{h}</th>)}</tr></thead>
+              <tbody>{line.stages.sort((a,b)=>a.order-b.order).map(s=>(
+                <tr key={s.id} style={{borderBottom:"1px solid #0E1118"}}>
+                  <td style={{padding:"7px 10px",fontFamily:"'DM Mono',monospace",fontSize:11,color:"#6B7A9A"}}>{s.id}</td>
+                  <td style={{padding:"7px 10px"}}><input value={s.name} onChange={e=>handleUpdateStage(activeLine,s.id,"name",e.target.value)} style={{background:"#0E1118",border:"1px solid #1A1F2E",color:"#D8DCE8",padding:"4px 7px",borderRadius:4,fontSize:12,outline:"none",width:"100%",maxWidth:240}}/></td>
+                  <td style={{padding:"7px 10px"}}><input type="number" min="1" value={s.order} onChange={e=>handleUpdateStage(activeLine,s.id,"order",e.target.value)} style={{background:"#0E1118",border:"1px solid #1A1F2E",color:"#D8DCE8",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:56}}/></td>
+                  <td style={{padding:"7px 10px"}}>{line.machines.filter(m=>m.stageId===s.id).map(m=><span key={m.id} style={{display:"inline-block",background:"#1A1F2E",borderRadius:4,padding:"1px 7px",fontSize:10,margin:2,color:"#A0AABB"}}>{m.name}</span>)||<span style={{color:"#6B7A9A",fontSize:10}}>—</span>}</td>
+                  <td style={{padding:"7px 6px"}}><button onClick={()=>handleRemoveStage(activeLine,s.id)} title="Eliminar etapa (también borra sus máquinas)" style={{width:22,height:22,borderRadius:4,background:"rgba(248,113,113,.08)",border:"1px solid rgba(248,113,113,.2)",color:"#F87171",cursor:"pointer",fontSize:13,lineHeight:1}}>×</button></td>
+                </tr>
+              ))}</tbody>
+            </table>
+            )}
+          </div>
+        )}
+
+        {activeConfigTab==="machines"&&(
+          <div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+              <div style={{fontSize:11,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em"}}>{line.machines.length} máquinas en {line?.name}</div>
+              <button onClick={()=>handleAddMachine(activeLine)} disabled={!line.stages.length} style={{fontSize:11,padding:"5px 12px",borderRadius:5,background:"rgba(245,158,11,.1)",border:"1px solid rgba(245,158,11,.3)",color:"#F59E0B",cursor:line.stages.length?"pointer":"not-allowed",opacity:line.stages.length?1:.4,fontFamily:"'DM Mono',monospace"}}>+ Agregar máquina</button>
+            </div>
+            {line.machines.length===0 ? <div style={{textAlign:"center",padding:"30px",color:"#6B7A9A",fontSize:13,background:"#0E1118",borderRadius:8,border:"1px dashed #1A1F2E"}}>{line.stages.length?"Sin máquinas. Agrega la primera.":"Define al menos una etapa antes de agregar máquinas."}</div> : (
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+              <thead><tr>{["ID","Máquina","Etapa","Cap./hora",""].map(h=><th key={h} style={{textAlign:"left",fontSize:10,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"7px 10px",borderBottom:"1px solid #1A1F2E"}}>{h}</th>)}</tr></thead>
+              <tbody>{line.machines.map(m=>(
+                <tr key={m.id} style={{borderBottom:"1px solid #0E1118"}}>
+                  <td style={{padding:"7px 10px",fontFamily:"'DM Mono',monospace",fontSize:11,color:"#6B7A9A"}}>{m.id}</td>
+                  <td style={{padding:"7px 10px"}}><input value={m.name} onChange={e=>handleUpdateMachine(activeLine,m.id,"name",e.target.value)} style={{background:"#0E1118",border:"1px solid #1A1F2E",color:"#D8DCE8",padding:"4px 7px",borderRadius:4,fontSize:12,outline:"none",width:"100%",maxWidth:200}}/></td>
+                  <td style={{padding:"7px 10px"}}><select value={m.stageId} onChange={e=>handleUpdateMachine(activeLine,m.id,"stageId",e.target.value)} style={{background:"#0E1118",border:"1px solid #1A1F2E",color:"#F59E0B",padding:"4px 7px",borderRadius:4,fontSize:11,outline:"none",fontFamily:"'DM Mono',monospace"}}>{line.stages.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select></td>
+                  <td style={{padding:"7px 10px"}}><input type="number" min="1" value={m.capacityPerHour} onChange={e=>handleUpdateMachine(activeLine,m.id,"capacityPerHour",e.target.value)} style={{background:"#0E1118",border:"1px solid #1A1F2E",color:"#D8DCE8",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:72}}/><span style={{fontSize:10,color:"#6B7A9A",marginLeft:5,fontFamily:"'DM Mono',monospace"}}>pzs/h</span></td>
+                  <td style={{padding:"7px 6px"}}><button onClick={()=>handleRemoveMachine(activeLine,m.id)} title="Eliminar" style={{width:22,height:22,borderRadius:4,background:"rgba(248,113,113,.08)",border:"1px solid rgba(248,113,113,.2)",color:"#F87171",cursor:"pointer",fontSize:13,lineHeight:1}}>×</button></td>
+                </tr>
+              ))}</tbody>
+            </table>
+            )}
+          </div>
+        )}
+
+        {activeConfigTab==="skus"&&(
+          <div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+              <div style={{fontSize:11,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em"}}>{line.skus.length} SKUs en {line?.name}</div>
+              <button onClick={()=>handleAddSku(activeLine)} disabled={!line.stages.length} style={{fontSize:11,padding:"5px 12px",borderRadius:5,background:"rgba(245,158,11,.1)",border:"1px solid rgba(245,158,11,.3)",color:"#F59E0B",cursor:line.stages.length?"pointer":"not-allowed",opacity:line.stages.length?1:.4,fontFamily:"'DM Mono',monospace"}}>+ Agregar SKU</button>
+            </div>
+            {line.skus.length===0 ? <div style={{textAlign:"center",padding:"30px",color:"#6B7A9A",fontSize:13,background:"#0E1118",borderRadius:8,border:"1px dashed #1A1F2E"}}>{line.stages.length?"Sin SKUs. Agrega el primero.":"Define etapas antes de agregar SKUs."}</div> : (
+            <div style={{overflowX:"auto"}}>
+              <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                <thead><tr>{["Color","ID","Nombre","Familia","Lote"].concat(line.stages.sort((a,b)=>a.order-b.order).map(s=>s.name+" (min)")).concat([""]).map(h=><th key={h} style={{textAlign:"left",fontSize:10,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"7px 8px",borderBottom:"1px solid #1A1F2E",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
+                <tbody>{line.skus.map(sku=>(
+                  <tr key={sku.id} style={{borderBottom:"1px solid #0E1118"}}>
+                    <td style={{padding:"7px 8px"}}><input type="color" value={sku.color} onChange={e=>handleUpdateSku(activeLine,sku.id,"color",e.target.value)} style={{width:28,height:22,border:"1px solid #1A1F2E",borderRadius:4,background:"transparent",cursor:"pointer",padding:0}}/></td>
+                    <td style={{padding:"7px 8px",fontFamily:"'DM Mono',monospace",fontSize:11,color:"#6B7A9A"}}>{sku.id}</td>
+                    <td style={{padding:"7px 8px"}}><input value={sku.name} onChange={e=>handleUpdateSku(activeLine,sku.id,"name",e.target.value)} style={{background:"#0E1118",border:"1px solid #1A1F2E",color:"#D8DCE8",padding:"4px 7px",borderRadius:4,fontSize:12,outline:"none",minWidth:160}}/></td>
+                    <td style={{padding:"7px 8px"}}><input value={sku.family} onChange={e=>handleUpdateSku(activeLine,sku.id,"family",e.target.value)} style={{background:"#0E1118",border:"1px solid #1A1F2E",color:"#A0AABB",padding:"4px 7px",borderRadius:4,fontSize:11,outline:"none",width:100}}/></td>
+                    <td style={{padding:"7px 8px"}}><input type="number" min="1" value={sku.batchSize} onChange={e=>handleUpdateSku(activeLine,sku.id,"batchSize",e.target.value)} style={{background:"#0E1118",border:"1px solid #1A1F2E",color:"#D8DCE8",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:54}}/></td>
+                    {line.stages.sort((a,b)=>a.order-b.order).map(s=>(
+                      <td key={s.id} style={{padding:"7px 8px"}}>
+                        <input type="number" min="0" value={sku.stageTimes?.[s.id]||0} onChange={e=>handleUpdateSkuStageTime(activeLine,sku.id,s.id,e.target.value)} style={{background:"#0E1118",border:"1px solid #1A1F2E",color:"#D8DCE8",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:54}}/>
+                      </td>
+                    ))}
+                    <td style={{padding:"7px 6px"}}><button onClick={()=>handleRemoveSku(activeLine,sku.id)} title="Eliminar SKU (limpia matriz setup y secuencias)" style={{width:22,height:22,borderRadius:4,background:"rgba(248,113,113,.08)",border:"1px solid rgba(248,113,113,.2)",color:"#F87171",cursor:"pointer",fontSize:13,lineHeight:1}}>×</button></td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+            )}
+          </div>
+        )}
+
+        {activeConfigTab==="forbidden"&&(
+          <div>
+            <div style={{fontSize:12,color:"#6B7A9A",background:"#0E1118",borderRadius:7,padding:"10px 14px",marginBottom:12,lineHeight:1.6}}>El SKU "Después" no puede programarse inmediatamente después del SKU "Antes" en la misma línea.</div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+              <div style={{fontSize:11,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em"}}>{line.forbiddenSequences.length} reglas activas</div>
+              <button onClick={()=>handleAddForbidden(activeLine)} disabled={line.skus.length<2} style={{fontSize:11,padding:"5px 12px",borderRadius:5,background:"rgba(245,158,11,.1)",border:"1px solid rgba(245,158,11,.3)",color:"#F59E0B",cursor:line.skus.length>=2?"pointer":"not-allowed",opacity:line.skus.length>=2?1:.4,fontFamily:"'DM Mono',monospace"}}>+ Agregar regla</button>
+            </div>
+            {line.forbiddenSequences.length===0
+              ?<div style={{textAlign:"center",padding:"30px",color:"#6B7A9A",fontSize:13,background:"#0E1118",borderRadius:8,border:"1px dashed #1A1F2E"}}>{line.skus.length>=2?"Sin rutas prohibidas. Agrega la primera regla.":"Necesitas al menos 2 SKUs para definir reglas."}</div>
+              :<table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                <thead><tr>{["ID","Antes →","Después","Razón",""].map(h=><th key={h} style={{textAlign:"left",fontSize:10,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"7px 10px",borderBottom:"1px solid #1A1F2E"}}>{h}</th>)}</tr></thead>
+                <tbody>{line.forbiddenSequences.map(f=>{
+                  const fs=line.skus.find(s=>s.id===f.from),ts=line.skus.find(s=>s.id===f.to);
+                  return (<tr key={f.id} style={{borderBottom:"1px solid #0E1118"}}>
+                    <td style={{padding:"7px 10px",fontFamily:"'DM Mono',monospace",fontSize:11,color:"#6B7A9A"}}>{f.id}</td>
+                    <td style={{padding:"7px 10px"}}>
+                      <div style={{display:"flex",alignItems:"center",gap:6}}>
+                        <span style={{display:"inline-block",width:8,height:8,borderRadius:2,background:fs?.color||"#252D3D"}}/>
+                        <select value={f.from} onChange={e=>handleUpdateForbidden(activeLine,f.id,"from",e.target.value)} style={{background:"#0E1118",border:"1px solid #1A1F2E",color:"#D8DCE8",padding:"4px 7px",borderRadius:4,fontSize:11,outline:"none",minWidth:140,fontFamily:"'DM Mono',monospace"}}>{line.skus.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select>
+                      </div>
+                    </td>
+                    <td style={{padding:"7px 10px"}}>
+                      <div style={{display:"flex",alignItems:"center",gap:6}}>
+                        <span style={{display:"inline-block",width:8,height:8,borderRadius:2,background:ts?.color||"#252D3D"}}/>
+                        <select value={f.to} onChange={e=>handleUpdateForbidden(activeLine,f.id,"to",e.target.value)} style={{background:"#0E1118",border:"1px solid #1A1F2E",color:"#D8DCE8",padding:"4px 7px",borderRadius:4,fontSize:11,outline:"none",minWidth:140,fontFamily:"'DM Mono',monospace"}}>{line.skus.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select>
+                      </div>
+                    </td>
+                    <td style={{padding:"7px 10px"}}><input value={f.reason} onChange={e=>handleUpdateForbidden(activeLine,f.id,"reason",e.target.value)} style={{background:"#0E1118",border:"1px solid #1A1F2E",color:"#D8DCE8",padding:"4px 7px",borderRadius:4,fontSize:11,outline:"none",width:"100%",minWidth:240}}/></td>
+                    <td style={{padding:"7px 6px"}}><button onClick={()=>handleRemoveForbidden(activeLine,f.id)} title="Eliminar" style={{width:22,height:22,borderRadius:4,background:"rgba(248,113,113,.08)",border:"1px solid rgba(248,113,113,.2)",color:"#F87171",cursor:"pointer",fontSize:13,lineHeight:1}}>×</button></td>
+                  </tr>);
+                })}</tbody>
+              </table>
+            }
+          </div>
+        )}
+
+        {activeConfigTab==="setup"&&(
+          <div>
+            <div style={{fontSize:12,color:"#6B7A9A",background:"#0E1118",borderRadius:7,padding:"10px 14px",marginBottom:12,lineHeight:1.6}}>Minutos de setup al cambiar de SKU. Edita cualquier celda; 0 ó vacío = sin setup. <span style={{color:"#34D399"}}>Verde</span> &lt;30min, <span style={{color:"#FBBF24"}}>Amarillo</span> 30-60min, <span style={{color:"#F87171"}}>Rojo</span> &gt;60min.</div>
+            {line.skus.length<2 ? <div style={{textAlign:"center",padding:"30px",color:"#6B7A9A",fontSize:13,background:"#0E1118",borderRadius:8,border:"1px dashed #1A1F2E"}}>Necesitas al menos 2 SKUs para usar matriz de setup.</div> : (
+            <div style={{overflowX:"auto"}}>
+              <table style={{borderCollapse:"collapse",fontSize:11}}>
+                <thead><tr>
+                  <th style={{padding:"7px 12px",borderBottom:"1px solid #1A1F2E",fontSize:10,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textAlign:"left",minWidth:80}}>Desde ↓ / Hacia →</th>
+                  {line.skus.map(s=><th key={s.id} style={{padding:"7px 12px",borderBottom:"1px solid #1A1F2E",fontSize:10,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textAlign:"center",minWidth:80,whiteSpace:"nowrap"}}><span style={{display:"inline-block",width:7,height:7,borderRadius:1,background:s.color,marginRight:4,verticalAlign:"middle"}}/>{s.id}</th>)}
+                </tr></thead>
+                <tbody>{line.skus.map(from=>(
+                  <tr key={from.id} style={{borderBottom:"1px solid #0E1118"}}>
+                    <td style={{padding:"6px 12px",fontFamily:"'DM Mono',monospace",fontSize:11,whiteSpace:"nowrap"}}><span style={{display:"inline-block",width:7,height:7,borderRadius:1,background:from.color,marginRight:5,verticalAlign:"middle"}}/>{from.id}</td>
+                    {line.skus.map(to=>{
+                      if(from.id===to.id) return <td key={to.id} style={{padding:"6px 12px",textAlign:"center",color:"#252D3D",fontFamily:"'DM Mono',monospace"}}>—</td>;
+                      const m=line.setupMatrix?.[`${from.id}|${to.id}`]||0;
+                      const c=m===0?"#6B7A9A":m<30?"#34D399":m<60?"#FBBF24":"#F87171";
+                      return <td key={to.id} style={{padding:"4px 8px",textAlign:"center"}}>
+                        <input type="number" min="0" value={m||""} placeholder="0"
+                          onChange={e=>handleUpdateSetup(activeLine,from.id,to.id,e.target.value)}
+                          onFocus={e=>e.target.style.background="#0E1118"}
+                          onBlur={e=>e.target.style.background="transparent"}
+                          style={{width:46,background:"transparent",border:"1px solid transparent",color:c,fontFamily:"'DM Mono',monospace",fontSize:11,textAlign:"center",outline:"none",padding:"2px 4px",borderRadius:3,fontWeight:m>0?600:400,transition:"background .15s"}}
+                          onMouseEnter={e=>{if(document.activeElement!==e.target)e.target.style.borderColor="#1A2130";}}
+                          onMouseLeave={e=>{if(document.activeElement!==e.target)e.target.style.borderColor="transparent";}}
+                        />
+                      </td>;
+                    })}
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+            )}
+          </div>
+        )}
+
+        {/* ── TURNOS TAB ────────────────────────────────────── */}
+        {activeConfigTab==="shifts"&&(
+          <div>
+            {/* Working Days */}
+            <div style={{marginBottom:22}}>
+              <div style={{fontSize:11,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",marginBottom:10}}>Días hábiles de producción</div>
+              <div style={{display:"flex",gap:6}}>
+                {[1,2,3,4,5,6,0].map(day=>{
+                  const isActive=(line.workingDays||[]).includes(day);
+                  return (
+                    <button key={day} onClick={()=>handleWorkingDayToggle(activeLine,day)} style={{width:44,height:44,borderRadius:8,fontSize:11,fontFamily:"'DM Mono',monospace",fontWeight:600,cursor:"pointer",
+                      background:isActive?line.color+"CC":"#141820",color:isActive?"#fff":"#6B7A9A",
+                      border:isActive?`1px solid ${line.color}`:"1px solid #252D3D",transition:"all .2s"}}>
+                      {DAY_NAMES[day]}
+                    </button>
+                  );
+                })}
+              </div>
+              <div style={{fontSize:10,color:"#6B7A9A",marginTop:7,fontFamily:"'DM Mono',monospace"}}>
+                {(line.workingDays||[]).length} días/semana · {shiftHrsDay.toFixed(1)} h/día activas · {((line.workingDays||[]).length*shiftHrsDay).toFixed(0)} h/semana
+              </div>
+            </div>
+
+            {/* 24h Timeline visualization */}
+            <div style={{marginBottom:22}}>
+              <div style={{fontSize:11,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",marginBottom:8}}>Vista 24 horas</div>
+              <div style={{position:"relative",height:38,background:"#141820",borderRadius:7,border:"1px solid #1A1F2E",overflow:"hidden",marginBottom:16}}>
+                {/* background grid lines */}
+                {[0,3,6,9,12,15,18,21].map(h=>(
+                  <div key={h} style={{position:"absolute",top:0,bottom:0,left:`${(h/24)*100}%`,borderLeft:"1px solid rgba(255,255,255,.05)",pointerEvents:"none"}}/>
+                ))}
+                {/* shift segments */}
+                {(line.shifts||[]).map(shift=>{
+                  const [sh,sm]=shift.start.split(":").map(Number),[eh,em]=shift.end.split(":").map(Number);
+                  const sH=sh+sm/60, eH=eh+em/60;
+                  const overnight=eH<=sH;
+                  const segs=overnight
+                    ?[{l:(sH/24)*100,w:((24-sH)/24)*100},{l:0,w:(eH/24)*100}]
+                    :[{l:(sH/24)*100,w:((eH-sH)/24)*100}];
+                  const isActive=shift.active!==false;
+                  return segs.map((seg,i)=>(
+                    <div key={`${shift.id}-${i}`} style={{position:"absolute",top:4,bottom:4,left:`${seg.l}%`,width:`${Math.max(seg.w,.5)}%`,
+                      background:isActive?line.color+"99":"#252D3D",borderRadius:3,overflow:"hidden",
+                      display:"flex",alignItems:"center",justifyContent:"center"}}>
+                      {i===0&&seg.w>4&&<span style={{fontSize:9,color:"rgba(255,255,255,.7)",fontFamily:"'DM Mono',monospace",whiteSpace:"nowrap",paddingLeft:4,overflow:"hidden"}}>{shift.name}</span>}
+                    </div>
+                  ));
+                })}
+              </div>
+              {/* hour labels */}
+              <div style={{position:"relative",height:14}}>
+                {[0,6,12,18,24].map(h=>(
+                  <span key={h} style={{position:"absolute",left:`${(h/24)*100}%`,transform:"translateX(-50%)",fontSize:9,color:"#6B7A9A",fontFamily:"'DM Mono',monospace"}}>{h===24?"0:00":`${h}:00`}</span>
+                ))}
+              </div>
+            </div>
+
+            {/* Shift list */}
+            <div>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                <div style={{fontSize:11,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em"}}>Turnos ({(line.shifts||[]).length})</div>
+                <button onClick={()=>handleAddShift(activeLine)} style={{fontSize:10,padding:"4px 10px",borderRadius:5,background:"rgba(245,158,11,.1)",border:"1px solid rgba(245,158,11,.3)",color:"#F59E0B",cursor:"pointer"}}>+ Agregar turno</button>
+              </div>
+              <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                {(line.shifts||[]).map(shift=>(
+                  <div key={shift.id} style={{padding:"10px 12px",background:"#141820",borderRadius:7,border:`1px solid ${shift.active!==false?"#252D3D":"#1A2130"}`,opacity:shift.active!==false?1:.65}}>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr auto auto auto 26px",gap:8,alignItems:"center"}}>
+                      <input value={shift.name} onChange={e=>handleShiftUpdate(activeLine,shift.id,"name",e.target.value)} style={{background:"#0E1118",border:"1px solid #252D3D",color:"#D8DCE8",padding:"5px 9px",borderRadius:5,fontSize:12,outline:"none"}}/>
+                      <div style={{display:"flex",alignItems:"center",gap:5}}>
+                        <span style={{fontSize:10,color:"#6B7A9A",fontFamily:"'DM Mono',monospace"}}>Inicio</span>
+                        <input type="time" value={shift.start} onChange={e=>handleShiftUpdate(activeLine,shift.id,"start",e.target.value)} style={{background:"#0E1118",border:"1px solid #252D3D",color:"#D8DCE8",padding:"4px 6px",borderRadius:5,fontSize:11,outline:"none",fontFamily:"'DM Mono',monospace",width:78,colorScheme:"dark"}}/>
+                      </div>
+                      <div style={{display:"flex",alignItems:"center",gap:5}}>
+                        <span style={{fontSize:10,color:"#6B7A9A",fontFamily:"'DM Mono',monospace"}}>Fin</span>
+                        <input type="time" value={shift.end} onChange={e=>handleShiftUpdate(activeLine,shift.id,"end",e.target.value)} style={{background:"#0E1118",border:"1px solid #252D3D",color:"#D8DCE8",padding:"4px 6px",borderRadius:5,fontSize:11,outline:"none",fontFamily:"'DM Mono',monospace",width:78,colorScheme:"dark"}}/>
+                      </div>
+                      <button onClick={()=>handleShiftUpdate(activeLine,shift.id,"active",shift.active===false)} style={{padding:"4px 10px",borderRadius:5,cursor:"pointer",fontSize:10,fontFamily:"'DM Mono',monospace",
+                        background:shift.active!==false?"rgba(52,211,153,.1)":"rgba(248,113,113,.08)",
+                        border:shift.active!==false?"1px solid rgba(52,211,153,.3)":"1px solid rgba(248,113,113,.2)",
+                        color:shift.active!==false?"#34D399":"#F87171"}}>
+                        {shift.active!==false?"● Activo":"○ Inactivo"}
+                      </button>
+                      <button onClick={()=>handleRemoveShift(activeLine,shift.id)} style={{width:26,height:26,borderRadius:5,background:"rgba(248,113,113,.08)",border:"1px solid rgba(248,113,113,.2)",color:"#F87171",cursor:"pointer",fontSize:15,lineHeight:1,display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
+                    </div>
+                    <div style={{marginTop:6,fontSize:10,color:"#6B7A9A",fontFamily:"'DM Mono',monospace"}}>
+                      {shift.start} → {shift.end}
+                      {(() => { const [sh,sm]=shift.start.split(":").map(Number),[eh,em]=shift.end.split(":").map(Number); let h=(eh+em/60)-(sh+sm/60); if(h<0)h+=24; return ` · ${h.toFixed(1)}h`; })()}
+                      {shift.end < shift.start && <span style={{color:"#FBBF24",marginLeft:6}}>↪ turno nocturno</span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // ════════════════════════════════════════════════════════════
+  //  RENDER
+  // ════════════════════════════════════════════════════════════
+
+  return (
+    <>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500&display=swap');
+        *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+        body,html{background:#0B0D12;color:#D8DCE8;font-family:'DM Sans',sans-serif;}
+        .app{display:flex;flex-direction:column;height:100vh;overflow:hidden;background:#0B0D12;}
+        .topbar{display:flex;align-items:center;justify-content:space-between;padding:0 24px;height:54px;background:#0E1118;border-bottom:1px solid #1A1F2E;flex-shrink:0;gap:16px;}
+        .brand{display:flex;align-items:center;gap:10px;}
+        .brand-mark{width:30px;height:30px;background:linear-gradient(135deg,#F59E0B,#EF4444);border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:'Syne',sans-serif;font-weight:800;font-size:12px;color:#fff;}
+        .brand-name{font-family:'Syne',sans-serif;font-weight:700;font-size:14px;letter-spacing:-.02em;}
+        .kpi-strip{display:grid;grid-template-columns:repeat(5,1fr);border-bottom:1px solid #1A1F2E;flex-shrink:0;}
+        .kpi{padding:10px 16px;border-right:1px solid #1A1F2E;}
+        .kpi:last-child{border-right:none;}
+        .body{display:grid;grid-template-columns:1fr 310px;flex:1;overflow:hidden;}
+        .left{display:flex;flex-direction:column;border-right:1px solid #1A1F2E;overflow:hidden;}
+        .tabs{display:flex;padding:0 18px;border-bottom:1px solid #1A1F2E;flex-shrink:0;}
+        .tab-btn{padding:8px 13px;font-size:11px;font-family:'DM Mono',monospace;color:#6B7A9A;background:none;border:none;border-bottom:2px solid transparent;cursor:pointer;transition:all .2s;}
+        .tab-btn.active{color:#F59E0B;border-bottom-color:#F59E0B;}
+        .panel{flex:1;overflow-y:auto;padding:16px 18px;}
+        .panel::-webkit-scrollbar{width:3px;}
+        .panel::-webkit-scrollbar-thumb{background:#252D3D;}
+        .ai-panel{display:flex;flex-direction:column;background:#0E1118;overflow:hidden;}
+        .ai-msgs{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:9px;}
+        .ai-msgs::-webkit-scrollbar{width:3px;}
+        .ai-msgs::-webkit-scrollbar-thumb{background:#252D3D;}
+        .bubble{padding:9px 12px;border-radius:9px;font-size:12px;line-height:1.65;white-space:pre-wrap;}
+        .user-bubble{background:rgba(245,158,11,.1);color:#FCD34D;border:1px solid rgba(245,158,11,.2);border-bottom-right-radius:2px;align-self:flex-end;max-width:92%;}
+        .ai-bubble{background:#141820;color:#C0C8D8;border:1px solid #1A1F2E;border-bottom-left-radius:2px;align-self:flex-start;max-width:92%;}
+        .loading span{animation:blink 1.2s infinite;display:inline-block;}
+        .loading span:nth-child(2){animation-delay:.15s;}
+        .loading span:nth-child(3){animation-delay:.3s;}
+        @keyframes blink{0%,80%,100%{opacity:.2}40%{opacity:1}}
+        .ai-pulse{width:7px;height:7px;background:#34D399;border-radius:50%;animation:pulse 2s infinite;display:inline-block;}
+        @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+      `}</style>
+      <div className="app">
+        <header className="topbar">
+          <div className="brand">
+            <div className="brand-mark">PS</div>
+            <div className="brand-name">ProdScheduler</div>
+          </div>
+          <div style={{display:"flex",gap:4}}>
+            {data.lines.map(l=>(
+              <button key={l.id} onClick={()=>setActiveLine(l.id)} style={{padding:"5px 14px",borderRadius:20,fontSize:12,fontWeight:500,cursor:"pointer",border:"1px solid transparent",transition:"all .2s",background:activeLine===l.id?l.color:"transparent",color:activeLine===l.id?"#fff":"#6B7A9A"}}>
+                {l.name}
+              </button>
+            ))}
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            {lastSaved && (
+              <span title={`Auto-guardado: ${new Date(lastSaved).toLocaleString("es-MX")}`}
+                style={{fontSize:10,color:"#34D399",fontFamily:"'DM Mono',monospace",display:"flex",alignItems:"center",gap:5}}>
+                <span style={{width:6,height:6,borderRadius:"50%",background:"#34D399",boxShadow:"0 0 6px #34D399"}}/>
+                guardado {(()=>{
+                  const diff = (Date.now() - new Date(lastSaved).getTime())/1000;
+                  if (diff < 5) return "ahora";
+                  if (diff < 60) return `hace ${Math.floor(diff)}s`;
+                  if (diff < 3600) return `hace ${Math.floor(diff/60)}m`;
+                  const d = new Date(lastSaved);
+                  return d.toLocaleTimeString("es-MX",{hour:"2-digit",minute:"2-digit"});
+                })()}
+              </span>
+            )}
+            <button onClick={handleExportData} title="Descargar respaldo JSON" style={{padding:"5px 10px",borderRadius:5,background:"transparent",border:"1px solid #1A2130",color:"#A0AABB",cursor:"pointer",fontSize:11,fontFamily:"'DM Mono',monospace"}}>↓ Exportar</button>
+            <label title="Cargar respaldo JSON" style={{padding:"5px 10px",borderRadius:5,background:"transparent",border:"1px solid #1A2130",color:"#A0AABB",cursor:"pointer",fontSize:11,fontFamily:"'DM Mono',monospace"}}>
+              ↑ Importar
+              <input type="file" accept=".json,application/json" onChange={handleImportData} style={{display:"none"}}/>
+            </label>
+            <button onClick={()=>setShowResetConfirm(true)} title="Restaurar datos de ejemplo" style={{padding:"5px 10px",borderRadius:5,background:"transparent",border:"1px solid rgba(248,113,113,.2)",color:"#F87171",cursor:"pointer",fontSize:11,fontFamily:"'DM Mono',monospace"}}>↺ Reset</button>
+            <span style={{width:1,height:18,background:"#1A2130"}}/>
+            <span style={{fontSize:11,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".06em"}}>Heurística</span>
+            <select value={heuristic} onChange={e=>{setHeuristic(e.target.value);setCustomOrder(p=>({...p,[activeLine]:null}));}} style={{background:"#141820",border:"1px solid #252D3D",color:"#D8DCE8",padding:"5px 10px",borderRadius:6,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",cursor:"pointer"}}>
+              <option value="EDD">EDD – Earliest Due Date</option>
+              <option value="SPT">SPT – Shortest Processing Time</option>
+              <option value="WSPT">WSPT – Weighted SPT</option>
+              <option value="CR">CR – Critical Ratio</option>
+              <option value="FIFO">FIFO</option>
+            </select>
+          </div>
+        </header>
+
+        {showResetConfirm && (
+          <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.7)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}} onClick={()=>setShowResetConfirm(false)}>
+            <div onClick={e=>e.stopPropagation()} style={{background:"#141820",border:"1px solid #252D3D",borderRadius:10,padding:24,maxWidth:420,boxShadow:"0 20px 60px rgba(0,0,0,.5)"}}>
+              <div style={{fontSize:16,fontWeight:600,marginBottom:10,color:"#F87171"}}>¿Borrar todos los datos?</div>
+              <div style={{fontSize:13,color:"#A0AABB",lineHeight:1.5,marginBottom:18}}>
+                Se eliminarán todas las órdenes, máquinas, SKUs y configuraciones personalizadas. Se restaurarán los datos de ejemplo iniciales. Esta acción no se puede deshacer (te recomendamos <strong style={{color:"#34D399"}}>↓ Exportar</strong> primero).
+              </div>
+              <div style={{display:"flex",gap:10,justifyContent:"flex-end"}}>
+                <button onClick={()=>setShowResetConfirm(false)} style={{padding:"7px 16px",borderRadius:5,background:"transparent",border:"1px solid #252D3D",color:"#A0AABB",cursor:"pointer",fontSize:12,fontFamily:"'DM Mono',monospace"}}>Cancelar</button>
+                <button onClick={handleResetData} style={{padding:"7px 16px",borderRadius:5,background:"rgba(248,113,113,.15)",border:"1px solid rgba(248,113,113,.3)",color:"#F87171",cursor:"pointer",fontSize:12,fontFamily:"'DM Mono',monospace"}}>Sí, borrar todo</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className="kpi-strip">
+          {[
+            { lbl:"Makespan",       val:`${schedule.kpis.makespan||0} min`,  sub:"tiempo total línea",                            c:schedule.kpis.lateOrders>0?"#FBBF24":"#34D399" },
+            { lbl:"Lotes programados", val:schedule.kpis.totalBatches||0,   sub:`de ${data.orders.filter(o=>o.lineId===activeLine).length} órdenes`, c:"#34D399" },
+            { lbl:"Órdenes tardías",   val:schedule.kpis.lateOrders||0,     sub:`en ${line?.name}`,                              c:(schedule.kpis.lateOrders||0)>0?"#F87171":"#34D399" },
+            { lbl:"Setup total",       val:`${schedule.kpis.totalSetup||0} min`, sub:"cambios de SKU",                          c:(schedule.kpis.totalSetup||0)>120?"#FBBF24":"#34D399" },
+            {
+              lbl: todayGoal>0 ? "Meta Hoy" : "Meta Facturación",
+              val: todayGoal>0 ? `${todayPct.toFixed(0)}%` : `${billingPct.toFixed(0)}%`,
+              sub: todayGoal>0 ? `$${(todayProj/1000).toFixed(0)}K / $${(todayGoal/1000).toFixed(0)}K hoy` : `$${totalValue.toLocaleString()} / $${data.billingGoal.toLocaleString()}`,
+              c: todayGoal>0?todayColor:billingPct>=100?"#34D399":billingPct>=70?"#FBBF24":"#F87171",
+              bar: true,
+              pct: todayGoal>0?todayPct:billingPct,
+            },
+          ].map(k=>(
+            <div key={k.lbl} className="kpi">
+              <div style={{fontSize:10,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em"}}>{k.lbl}</div>
+              <div style={{fontSize:19,fontWeight:700,fontFamily:"'Syne',sans-serif",marginTop:3,color:k.c,lineHeight:1}}>{k.val}</div>
+              {k.bar&&<div style={{height:2,background:"#1A1F2E",marginTop:5,borderRadius:1,overflow:"hidden"}}><div style={{height:"100%",width:`${k.pct}%`,background:k.c,transition:"width .8s"}}/></div>}
+              <div style={{fontSize:10,color:"#6B7A9A",marginTop:3}}>{k.sub}</div>
+            </div>
+          ))}
+        </div>
+
+        <div className="body">
+          <div className="left">
+            <div className="tabs">
+              {[["gantt","Diagrama Gantt"],["orders","Órdenes de Venta"],["metas","Metas"],["config","Configuración"]].map(([id,lbl])=>(
+                <button key={id} className={`tab-btn ${activeTab===id?"active":""}`} onClick={()=>setActiveTab(id)}>{lbl}</button>
+              ))}
+            </div>
+            <div className="panel">
+              {activeTab==="gantt"   && <GanttView/>}
+              {activeTab==="orders"  && <OrdersView/>}
+              {activeTab==="metas"   && <MetasView/>}
+              {activeTab==="config"  && <ConfigView/>}
+            </div>
+          </div>
+
+          <div className="ai-panel">
+            <div style={{padding:"12px 16px",borderBottom:"1px solid #1A1F2E",flexShrink:0}}>
+              <div style={{fontSize:13,fontWeight:600,fontFamily:"'Syne',sans-serif",display:"flex",alignItems:"center",gap:8}}><div className="ai-pulse"/>Asistente IA</div>
+              <div style={{fontSize:10,color:"#6B7A9A",marginTop:2,fontFamily:"'DM Mono',monospace"}}>turnos · metas · reglas · SKUs · secuencias</div>
+            </div>
+            <div className="ai-msgs">
+              {aiMessages.map((m,i)=>(
+                <div key={i} className={`bubble ${m.role==="user"?"user-bubble":"ai-bubble"}`}>{m.content}</div>
+              ))}
+              {isAiLoading&&<div className="bubble ai-bubble loading"><span>●</span><span>●</span><span>●</span></div>}
+              <div ref={chatRef}/>
+            </div>
+            <div style={{padding:"10px 12px",borderTop:"1px solid #1A1F2E",display:"flex",gap:8,flexShrink:0}}>
+              <textarea style={{flex:1,background:"#141820",border:"1px solid #252D3D",color:"#D8DCE8",padding:"8px 11px",borderRadius:7,fontSize:12,fontFamily:"'DM Sans',sans-serif",outline:"none",resize:"none",transition:"border-color .2s"}}
+                rows={2} placeholder="Instrucción o pregunta..." value={aiInput}
+                onChange={e=>setAiInput(e.target.value)}
+                onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendAI();}}}
+                onFocus={e=>e.target.style.borderColor="#F59E0B"}
+                onBlur={e=>e.target.style.borderColor="#252D3D"}/>
+              <button onClick={sendAI} disabled={isAiLoading||!aiInput.trim()} style={{background:"#F59E0B",border:"none",color:"#0B0D12",padding:"8px 12px",borderRadius:7,cursor:"pointer",fontSize:15,fontWeight:700,opacity:isAiLoading||!aiInput.trim()?0.35:1}}>↑</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+  </script>
+</body>
+</html>
