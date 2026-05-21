@@ -1111,11 +1111,14 @@ function App() {
   }), [mutate]);
 
   // ─── CRUD: Forbidden Sequences ────────────────────────────────
-  const handleUpdateForbidden = useCallback((lid, fid, field, val) => mutate(d => {
-    const li = d.lines.findIndex(l => l.id === lid);
-    const fi = d.lines[li].forbiddenSequences.findIndex(f => f.id === fid);
-    if (fi >= 0) d.lines[li].forbiddenSequences[fi][field] = val;
-  }), [mutate]);
+  const handleUpdateForbidden = useCallback((lid, fid, field, val) => {
+    mutate(d => {
+      const li = d.lines.findIndex(l => l.id === lid);
+      const fi = d.lines[li].forbiddenSequences.findIndex(f => f.id === fid);
+      if (fi >= 0) d.lines[li].forbiddenSequences[fi][field] = val;
+    });
+    setCustomOrder(p => ({ ...p, [lid]: null }));
+  }, [mutate]);
   const handleAddForbidden = useCallback(lid => {
     mutate(d => {
       const li = d.lines.findIndex(l => l.id === lid);
@@ -1360,13 +1363,54 @@ Responde en español.`;
       return d.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
     };
 
+    // Build constraint summary
+    const forbiddenCount = (line.forbiddenSequences || []).length;
+    const priorityCount  = (line.priorityRules || []).length;
+    const backlogSkus    = (line.skus || []).filter(s => typeof s.inventory === "number" && s.inventory < 0);
+    const hasConstraints = forbiddenCount > 0 || priorityCount > 0 || backlogSkus.length > 0;
+    // Verify the resequencing actually changed something — compute pre-rule order to compare
+    const skuSequence = ordered.map(b => b.skuId);
+    const skuTransitions = [];
+    for (let i = 1; i < skuSequence.length; i++) {
+      if (skuSequence[i] !== skuSequence[i-1]) skuTransitions.push([skuSequence[i-1], skuSequence[i]]);
+    }
+    // How many forbidden transitions DID we actually avoid? — the ones that exist in rules but not in current sequence
+    const ruleAvoided = (line.forbiddenSequences || []).filter(rule =>
+      !skuTransitions.some(([a,b]) => a === rule.from && b === rule.to)
+    );
+
     return (
       <div>
+        {hasConstraints && (
+          <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:12,padding:"8px 12px",background:"var(--surface)",border:"1px solid var(--border)",borderRadius:7,fontSize:11}}>
+            <div style={{color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",fontSize:10,textTransform:"uppercase",letterSpacing:".07em",marginRight:6,alignSelf:"center"}}>Restricciones activas:</div>
+            {backlogSkus.length > 0 && (
+              <span title={`SKUs con inventario negativo se programan primero: ${backlogSkus.map(s=>s.name).join(", ")}`} style={{padding:"3px 9px",background:"rgba(248,113,113,.1)",border:"1px solid rgba(248,113,113,.3)",borderRadius:4,color:"#F87171",fontFamily:"'DM Mono',monospace"}}>
+                🚨 {backlogSkus.length} backlog
+              </span>
+            )}
+            {priorityCount > 0 && (
+              <span title="Reglas de prioridad personalizada aplicadas" style={{padding:"3px 9px",background:"rgba(52,211,153,.1)",border:"1px solid rgba(52,211,153,.3)",borderRadius:4,color:"#34D399",fontFamily:"'DM Mono',monospace"}}>
+                ⬆ {priorityCount} prioridad{priorityCount>1?"es":""}
+              </span>
+            )}
+            {forbiddenCount > 0 && (
+              <span title={`${ruleAvoided.length}/${forbiddenCount} rutas prohibidas evitadas en la secuencia actual`} style={{padding:"3px 9px",background:"rgba(245,158,11,.1)",border:"1px solid rgba(245,158,11,.3)",borderRadius:4,color:"#F59E0B",fontFamily:"'DM Mono',monospace"}}>
+                🚫 {ruleAvoided.length}/{forbiddenCount} rutas evitadas
+              </span>
+            )}
+            {schedule.violations.length === 0 && hasConstraints && (
+              <span style={{padding:"3px 9px",background:"rgba(52,211,153,.06)",border:"1px solid rgba(52,211,153,.2)",borderRadius:4,color:"#34D399",fontFamily:"'DM Mono',monospace",marginLeft:"auto"}}>
+                ✓ Sin conflictos
+              </span>
+            )}
+          </div>
+        )}
         {schedule.violations.length > 0 && (
           <div style={{display:"flex",gap:10,background:"rgba(248,113,113,.08)",border:"1px solid rgba(248,113,113,.25)",borderRadius:8,padding:"10px 14px",marginBottom:14,fontSize:12}}>
             <span style={{fontSize:16,flexShrink:0}}>⚠</span>
             <div>
-              <div style={{color:"#F87171",fontWeight:600,marginBottom:3,fontFamily:"'DM Mono',monospace",fontSize:11,textTransform:"uppercase"}}>Conflictos de secuencia</div>
+              <div style={{color:"#F87171",fontWeight:600,marginBottom:3,fontFamily:"'DM Mono',monospace",fontSize:11,textTransform:"uppercase"}}>Conflictos de secuencia inevitables</div>
               {schedule.violations.map((v,i)=><div key={i} style={{color:"#FCA5A5",fontSize:12,lineHeight:1.5}}>{v.message}</div>)}
             </div>
           </div>
