@@ -10,7 +10,31 @@
     * { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { width: 100%; height: 100%; font-family: 'DM Sans', sans-serif; }
     #root { width: 100%; height: 100%; }
-    body { background: #0a0e17; color: #d8dce8; -webkit-font-smoothing: antialiased; }
+    :root, [data-theme="dark"] {
+      --bg: #0B0D12;
+      --surface: #0E1118;
+      --surface-2: #141820;
+      --surface-3: #2A3341;
+      --border: #1A1F2E;
+      --border-2: #252D3D;
+      --border-alt: #1A2130;
+      --text: #D8DCE8;
+      --text-muted: #A0AABB;
+      --text-dim: #6B7A9A;
+    }
+    [data-theme="light"] {
+      --bg: #F9FAFB;
+      --surface: #FFFFFF;
+      --surface-2: #F3F4F6;
+      --surface-3: #E5E7EB;
+      --border: #E5E7EB;
+      --border-2: #D1D5DB;
+      --border-alt: #E5E7EB;
+      --text: #111827;
+      --text-muted: #4B5563;
+      --text-dim: #6B7280;
+    }
+    body { background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; transition: background .2s, color .2s; }
   </style>
 </head>
 <body>
@@ -19,6 +43,7 @@
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 
   <script type="text/babel">
 const { useState, useEffect, useCallback, useRef, useMemo } = React;
@@ -291,11 +316,53 @@ const STATUS_COLORS = {
   late:         { bg: "rgba(248,113,113,.15)", text: "#F87171" },
   done:         { bg: "rgba(74,222,128,.15)",  text: "#4ADE80" },
 };
+
+// ════════════════════════════════════════════════════════════════
+//  API KEY MODAL
+// ════════════════════════════════════════════════════════════════
+function ApiKeyModal({ currentKey, onSave, onClose, themeMode }) {
+  const [val, setVal] = useState(currentKey || "");
+  const [show, setShow] = useState(false);
+  const masked = currentKey ? currentKey.slice(0,7) + "•••••••••" + currentKey.slice(-4) : "";
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.7)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1001}} onClick={onClose}>
+      <div onClick={e=>e.stopPropagation()} style={{background:"var(--surface-2)",border:"1px solid var(--border-2)",borderRadius:10,padding:24,maxWidth:520,width:"90%",boxShadow:"0 20px 60px rgba(0,0,0,.5)"}}>
+        <div style={{fontSize:16,fontWeight:600,marginBottom:6,color:"#34D399"}}>🔑 Configurar Anthropic API Key</div>
+        <div style={{fontSize:12,color:"var(--text-muted)",lineHeight:1.5,marginBottom:14}}>
+          Necesaria para que funcione el asistente de IA. La key se guarda solo en este navegador (localStorage) y nunca se envía a ningún servidor que no sea Anthropic.
+        </div>
+        <div style={{fontSize:11,color:"var(--text-dim)",background:"var(--surface)",border:"1px solid var(--border)",borderRadius:6,padding:"10px 12px",marginBottom:14,lineHeight:1.6}}>
+          <strong style={{color:"#FBBF24"}}>⚠ Importante:</strong> esta key permite hacer llamadas a la API de Anthropic que cuestan dinero de tu cuenta. <strong>No compartas tu key</strong> con nadie. Obtenla gratis en{" "}
+          <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener" style={{color:"#38BDF8"}}>console.anthropic.com</a> → Settings → API Keys → Create Key.
+        </div>
+        {currentKey && (
+          <div style={{fontSize:11,color:"var(--text-dim)",marginBottom:8,fontFamily:"'DM Mono',monospace"}}>Key actual: <span style={{color:"#34D399"}}>{masked}</span></div>
+        )}
+        <div style={{display:"flex",gap:6,marginBottom:14}}>
+          <input type={show?"text":"password"} value={val} onChange={e=>setVal(e.target.value)} placeholder="sk-ant-api03-..." autoFocus
+            style={{flex:1,background:"var(--surface)",border:"1px solid var(--border-2)",color:"var(--text)",padding:"8px 12px",borderRadius:5,fontFamily:"'DM Mono',monospace",fontSize:12,outline:"none"}}/>
+          <button onClick={()=>setShow(s=>!s)} title={show?"Ocultar":"Mostrar"} style={{padding:"0 12px",borderRadius:5,background:"var(--surface)",border:"1px solid var(--border-2)",color:"var(--text-muted)",cursor:"pointer",fontSize:14}}>{show?"🙈":"👁"}</button>
+        </div>
+        <div style={{fontSize:10,color:"var(--text-dim)",marginBottom:18,lineHeight:1.5}}>
+          La key debe empezar con <code style={{background:"var(--surface)",padding:"1px 5px",borderRadius:3,color:"#F59E0B"}}>sk-ant-api03-</code>. Si dejas el campo vacío y guardas, se elimina la key actual.
+        </div>
+        <div style={{display:"flex",gap:10,justifyContent:"space-between",alignItems:"center"}}>
+          {currentKey ? <button onClick={()=>onSave("")} style={{padding:"7px 14px",borderRadius:5,background:"transparent",border:"1px solid rgba(248,113,113,.25)",color:"#F87171",cursor:"pointer",fontSize:11,fontFamily:"'DM Mono',monospace"}}>Eliminar key</button> : <span/>}
+          <div style={{display:"flex",gap:10}}>
+            <button onClick={onClose} style={{padding:"7px 16px",borderRadius:5,background:"transparent",border:"1px solid var(--border-2)",color:"var(--text-muted)",cursor:"pointer",fontSize:12,fontFamily:"'DM Mono',monospace"}}>Cancelar</button>
+            <button onClick={()=>onSave(val)} disabled={!val.trim()} style={{padding:"7px 16px",borderRadius:5,background:val.trim()?"rgba(52,211,153,.15)":"transparent",border:"1px solid "+(val.trim()?"rgba(52,211,153,.3)":"var(--border-2)"),color:val.trim()?"#34D399":"var(--text-dim)",cursor:val.trim()?"pointer":"not-allowed",fontSize:12,fontFamily:"'DM Mono',monospace"}}>Guardar</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const DAY_NAMES = ["Dom","Lun","Mar","Mié","Jue","Vie","Sáb"];
 const fmtDayKey = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
 
 function PriorityDots({ n }) {
-  return <div style={{display:"flex",gap:3}}>{[1,2,3,4,5].map(i=><div key={i} style={{width:6,height:6,borderRadius:"50%",background:i<=n?"#FBBF24":"#252D3D"}}/>)}</div>;
+  return <div style={{display:"flex",gap:3}}>{[1,2,3,4,5].map(i=><div key={i} style={{width:6,height:6,borderRadius:"50%",background:i<=n?"#FBBF24":"var(--border-2)"}}/>)}</div>;
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -325,6 +392,50 @@ function App() {
   const [data,           setData]           = useState(initialData);
   const [lastSaved,      setLastSaved]      = useState(initialMeta.lastSaved || null);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [themeMode, setThemeMode] = useState(() => {
+    try { return localStorage.getItem("prodScheduler_v4_theme") || "dark"; }
+    catch (e) { return "dark"; }
+  });
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", themeMode);
+    try { localStorage.setItem("prodScheduler_v4_theme", themeMode); } catch(e){}
+  }, [themeMode]);
+  const toggleTheme = () => setThemeMode(m => m === "dark" ? "light" : "dark");
+
+  // ─── Horizonte de facturación ─────────────────────────────────
+  const [showHorizonModal, setShowHorizonModal] = useState(false);
+  const [horizonStart, setHorizonStart] = useState(() => {
+    const t = new Date(); return t.toISOString().slice(0,10);
+  });
+  const [horizonEnd, setHorizonEnd] = useState(() => {
+    const t = new Date(); t.setDate(t.getDate()+6); return t.toISOString().slice(0,10);
+  });
+  const [horizonDefault, setHorizonDefault] = useState(80000);
+  const [horizonReplace, setHorizonReplace] = useState(false);
+  const handleApplyHorizon = () => {
+    const start = new Date(horizonStart+"T12:00:00");
+    const end = new Date(horizonEnd+"T12:00:00");
+    if (isNaN(start) || isNaN(end) || end < start) { alert("Rango inválido. La fecha final debe ser igual o posterior a la inicial."); return; }
+    const lid = activeLine;
+    mutate(d => {
+      if (!d.dailyGoals) d.dailyGoals = {};
+      if (!d.dailyGoals[lid]) d.dailyGoals[lid] = {};
+      if (horizonReplace) d.dailyGoals[lid] = {};
+      const cur = new Date(start);
+      while (cur <= end) {
+        const key = `${cur.getFullYear()}-${String(cur.getMonth()+1).padStart(2,"0")}-${String(cur.getDate()).padStart(2,"0")}`;
+        // Skip non-working days (use line's workingDays)
+        const lineObj = d.lines.find(l => l.id === lid);
+        if (!lineObj.workingDays || lineObj.workingDays.includes(cur.getDay())) {
+          if (horizonReplace || !d.dailyGoals[lid][key]) {
+            d.dailyGoals[lid][key] = horizonDefault;
+          }
+        }
+        cur.setDate(cur.getDate()+1);
+      }
+    });
+    setShowHorizonModal(false);
+  };
 
   // Auto-save: persist data to localStorage on every change (debounced)
   const saveTimerRef = useRef(null);
@@ -374,6 +485,140 @@ function App() {
     e.target.value = ""; // reset input
   };
 
+  // ─── Excel Template Download/Import (SKUs & Machines) ────────
+  const handleDownloadTemplate = () => {
+    if (typeof XLSX === "undefined") { alert("Librería Excel aún cargando, intenta en un segundo."); return; }
+    const lineId = activeLine;
+    const lineObj = data.lines.find(l => l.id === lineId);
+    const stageNames = lineObj.stages.sort((a,b)=>a.order-b.order).map(s => `${s.name} (min)`);
+
+    // SKUs sheet headers + example rows from current data
+    const skusHeader = ["ID","Nombre","Familia","Lote","Color (hex)", ...stageNames];
+    const skusRows = lineObj.skus.map(s => {
+      const times = lineObj.stages.sort((a,b)=>a.order-b.order).map(st => s.stageTimes?.[st.id] || 0);
+      return [s.id, s.name, s.family, s.batchSize, s.color, ...times];
+    });
+    if (!skusRows.length) skusRows.push(["SKU-NEW","Producto ejemplo","General",1,"#3A7BD5", ...stageNames.map(()=>30)]);
+
+    // Machines sheet
+    const machinesHeader = ["ID","Nombre","Etapa (ID)","Etapa (nombre — referencia)","Cap./hora"];
+    const machinesRows = lineObj.machines.map(m => {
+      const st = lineObj.stages.find(x => x.id === m.stageId);
+      return [m.id, m.name, m.stageId, st?.name || "", m.capacityPerHour];
+    });
+    if (!machinesRows.length) machinesRows.push(["M-NEW","Máquina ejemplo", lineObj.stages[0]?.id || "S1", lineObj.stages[0]?.name || "", 10]);
+
+    // Reference sheet listing stages
+    const refHeader = ["ID Etapa","Nombre","Orden"];
+    const refRows = lineObj.stages.sort((a,b)=>a.order-b.order).map(s => [s.id, s.name, s.order]);
+
+    // Build workbook
+    const wb = XLSX.utils.book_new();
+    const wsSku = XLSX.utils.aoa_to_sheet([skusHeader, ...skusRows]);
+    const wsMch = XLSX.utils.aoa_to_sheet([machinesHeader, ...machinesRows]);
+    const wsRef = XLSX.utils.aoa_to_sheet([
+      ["Etapas disponibles en " + lineObj.name],
+      [],
+      refHeader,
+      ...refRows,
+      [],
+      ["INSTRUCCIONES:"],
+      ["1. Edita las hojas 'SKUs' y 'Máquinas' con tus datos."],
+      ["2. En 'Máquinas', usa el ID de etapa (columna C) - no el nombre."],
+      ["3. La columna ID debe ser única dentro de cada hoja."],
+      ["4. Para nuevos registros, deja ID vacío - se autogenerará uno."],
+      ["5. Sube este archivo desde el botón 'Importar Excel' en la app."],
+      ["6. Los tiempos de etapa (SKUs) son minutos por unidad."]
+    ]);
+    XLSX.utils.book_append_sheet(wb, wsSku, "SKUs");
+    XLSX.utils.book_append_sheet(wb, wsMch, "Máquinas");
+    XLSX.utils.book_append_sheet(wb, wsRef, "Referencia");
+    XLSX.writeFile(wb, `plantilla-${lineObj.name.toLowerCase()}-${new Date().toISOString().slice(0,10)}.xlsx`);
+  };
+
+  const handleImportExcel = (e) => {
+    if (typeof XLSX === "undefined") { alert("Librería Excel aún cargando, intenta en un segundo."); return; }
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const wb = XLSX.read(ev.target.result, { type: "array" });
+        const lid = activeLine;
+        let skusAdded = 0, skusUpdated = 0, machinesAdded = 0, machinesUpdated = 0;
+
+        mutate(d => {
+          const li = d.lines.findIndex(l => l.id === lid);
+          const lineObj = d.lines[li];
+          const stagesOrdered = lineObj.stages.sort((a,b)=>a.order-b.order);
+
+          // SKUs sheet
+          if (wb.Sheets["SKUs"]) {
+            const rows = XLSX.utils.sheet_to_json(wb.Sheets["SKUs"], { header: 1, defval: "" });
+            const header = rows[0] || [];
+            for (let i = 1; i < rows.length; i++) {
+              const row = rows[i];
+              if (!row || row.every(c => c === "" || c == null)) continue;
+              const [id, name, family, batchSize, color, ...times] = row;
+              if (!name || String(name).trim() === "") continue;
+              const stageTimes = {};
+              stagesOrdered.forEach((s, idx) => {
+                const v = parseInt(times[idx]);
+                stageTimes[s.id] = isNaN(v) ? 0 : Math.max(0, v);
+              });
+              const skuObj = {
+                id: id && String(id).trim() ? String(id).trim() : "SKU-" + (Date.now()%100000 + i),
+                name: String(name).trim(),
+                family: family ? String(family).trim() : "General",
+                batchSize: Math.max(1, parseInt(batchSize) || 1),
+                color: color && String(color).match(/^#[0-9A-Fa-f]{3,8}$/) ? String(color) : "#3A7BD5",
+                stageTimes
+              };
+              const existing = lineObj.skus.findIndex(s => s.id === skuObj.id);
+              if (existing >= 0) { lineObj.skus[existing] = skuObj; skusUpdated++; }
+              else { lineObj.skus.push(skuObj); skusAdded++; }
+            }
+          }
+
+          // Machines sheet
+          if (wb.Sheets["Máquinas"]) {
+            const rows = XLSX.utils.sheet_to_json(wb.Sheets["Máquinas"], { header: 1, defval: "" });
+            for (let i = 1; i < rows.length; i++) {
+              const row = rows[i];
+              if (!row || row.every(c => c === "" || c == null)) continue;
+              const [id, name, stageId, _stageName, capacity] = row;
+              if (!name || String(name).trim() === "") continue;
+              const validStageId = lineObj.stages.find(s => s.id === String(stageId).trim());
+              if (!validStageId) { console.warn(`Etapa "${stageId}" no existe, máquina "${name}" ignorada`); continue; }
+              const mObj = {
+                id: id && String(id).trim() ? String(id).trim() : "M-" + (Date.now()%100000 + i),
+                name: String(name).trim(),
+                stageId: validStageId.id,
+                capacityPerHour: Math.max(1, parseInt(capacity) || 10)
+              };
+              const existing = lineObj.machines.findIndex(m => m.id === mObj.id);
+              if (existing >= 0) { lineObj.machines[existing] = mObj; machinesUpdated++; }
+              else { lineObj.machines.push(mObj); machinesAdded++; }
+            }
+          }
+        });
+
+        const summary = [];
+        if (skusAdded) summary.push(`${skusAdded} SKU(s) nuevos`);
+        if (skusUpdated) summary.push(`${skusUpdated} SKU(s) actualizados`);
+        if (machinesAdded) summary.push(`${machinesAdded} máquina(s) nueva(s)`);
+        if (machinesUpdated) summary.push(`${machinesUpdated} máquina(s) actualizada(s)`);
+        alert(summary.length ? "Importación exitosa:\n" + summary.join("\n") : "El archivo no contenía datos nuevos.");
+      } catch (err) {
+        console.error(err);
+        alert("Error al leer Excel: " + err.message);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+    e.target.value = "";
+  };
+
+
   const [activeLine,     setActiveLine]     = useState("L1");
   const [heuristic,      setHeuristic]      = useState("EDD");
   const [activeTab,      setActiveTab]      = useState("gantt");
@@ -407,7 +652,7 @@ function App() {
   const todayGoal   = data.dailyGoals?.[activeLine]?.[todayKey] || 0;
   const todayProj   = projectedByDay[activeLine]?.[todayKey] || 0;
   const todayPct    = todayGoal > 0 ? Math.min(100,(todayProj/todayGoal)*100) : 0;
-  const todayColor  = todayGoal===0?"#6B7A9A":todayPct>=100?"#34D399":todayPct>=70?"#FBBF24":"#F87171";
+  const todayColor  = todayGoal===0?"var(--text-dim)":todayPct>=100?"#34D399":todayPct>=70?"#FBBF24":"#F87171";
   const totalValue  = data.orders.reduce((s,o)=>s+o.value,0);
   const billingPct  = data.billingGoal>0 ? Math.min(100,(totalValue/data.billingGoal)*100) : 0;
 
@@ -575,12 +820,35 @@ function App() {
   },[dragId,customOrder,activeLine,schedule.batches]);
 
   // ─── AI ─────────────────────────────────────────────────────
+  // API key for Anthropic - stored in localStorage (browser only, user-provided)
+  const [apiKey, setApiKey] = useState(() => {
+    try { return localStorage.getItem("prodScheduler_v4_anthropicKey") || ""; }
+    catch (e) { return ""; }
+  });
+  const [showApiKeyModal, setShowApiKeyModal] = useState(false);
+  const handleSaveApiKey = (k) => {
+    const trimmed = (k||"").trim();
+    if (trimmed) {
+      try { localStorage.setItem("prodScheduler_v4_anthropicKey", trimmed); } catch(e){}
+      setApiKey(trimmed);
+    } else {
+      try { localStorage.removeItem("prodScheduler_v4_anthropicKey"); } catch(e){}
+      setApiKey("");
+    }
+    setShowApiKeyModal(false);
+  };
+
   const sendAI = useCallback(async () => {
     if(!aiInput.trim()||isAiLoading) return;
+    if(!apiKey) {
+      setAiMessages(p=>[...p,{role:"assistant",content:"⚠ Necesitas una API key de Anthropic para usar el asistente. Click el ícono 🔑 arriba para configurarla."}]);
+      setShowApiKeyModal(true);
+      return;
+    }
     const userMsg=aiInput.trim(); setAiInput("");
     setAiMessages(p=>[...p,{role:"user",content:userMsg}]);
     setIsAiLoading(true);
-    const sys=`Eres experto en programación de producción de muebles. Sistema con 2 líneas: Comedores (L1) y Sofás (L2).
+    const sys=`Eres experto en programación de producción de muebles. Sistema con 2 líneas: Comedores (L1) y Sofás (L2). Moneda: COP (peso colombiano).
 Estado actual:
 ${JSON.stringify({
   lines:data.lines.map(l=>({id:l.id,name:l.name,workingDays:l.workingDays,shifts:l.shifts,
@@ -612,7 +880,32 @@ Acciones disponibles:
 - {"type":"set_daily_goal","lineId":"L1","date":"2026-05-22","amount":120000}
 Responde en español.`;
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,system:sys,messages:[...aiMessages.filter((_,i)=>i>0).map(m=>({role:m.role,content:m.content})),{role:"user",content:userMsg}]})});
+      const res = await fetch("https://api.anthropic.com/v1/messages",{
+        method:"POST",
+        headers:{
+          "Content-Type":"application/json",
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true"
+        },
+        body:JSON.stringify({
+          model:"claude-sonnet-4-5",
+          max_tokens:1024,
+          system:sys,
+          messages:[...aiMessages.filter((_,i)=>i>0).map(m=>({role:m.role,content:m.content})),{role:"user",content:userMsg}]
+        })
+      });
+      if (!res.ok) {
+        const errText = await res.text();
+        let errMsg = `Error ${res.status}`;
+        try { const errJson = JSON.parse(errText); errMsg = errJson.error?.message || errMsg; } catch(e){}
+        if (res.status === 401) errMsg = "API key inválida. Click 🔑 para corregir.";
+        else if (res.status === 429) errMsg = "Límite de rate alcanzado. Espera un momento.";
+        else if (res.status === 400) errMsg = "Error en la solicitud: " + errMsg;
+        setAiMessages(p=>[...p,{role:"assistant",content:"⚠ " + errMsg}]);
+        setIsAiLoading(false);
+        return;
+      }
       const raw  = await res.json();
       const txt  = raw.content?.map(b=>b.text||"").join("")||"{}";
       let parsed; try{parsed=JSON.parse(txt.replace(/```json|```/g,"").trim());}catch{setAiMessages(p=>[...p,{role:"assistant",content:txt}]);setIsAiLoading(false);return;}
@@ -645,16 +938,16 @@ Responde en español.`;
         if(nh) setHeuristic(nh);
       }
       setAiMessages(p=>[...p,{role:"assistant",content:parsed.message||"Listo."}]);
-    } catch { setAiMessages(p=>[...p,{role:"assistant",content:"Error de conexión."}]); }
+    } catch (err) { setAiMessages(p=>[...p,{role:"assistant",content:"⚠ Error de conexión: " + (err.message || err)}]); }
     setIsAiLoading(false);
-  },[aiInput,aiMessages,data,isAiLoading]);
+  },[aiInput,aiMessages,data,isAiLoading,apiKey]);
 
   // ════════════════════════════════════════════════════════════
   //  GANTT VIEW  (shift bands + DnD sequence panel)
   // ════════════════════════════════════════════════════════════
   const GanttView = () => {
     const { batches } = schedule;
-    if (!batches.length) return <div style={{color:"#6B7A9A",textAlign:"center",padding:"40px 0",fontSize:13}}>Sin órdenes para esta línea.</div>;
+    if (!batches.length) return <div style={{color:"var(--text-dim)",textAlign:"center",padding:"40px 0",fontSize:13}}>Sin órdenes para esta línea.</div>;
 
     const now  = Date.now();
     const maxT = Math.max(...batches.map(b=>b.endTime.getTime()), now + 3600000*20);
@@ -691,9 +984,9 @@ Responde en español.`;
         )}
 
         {/* ── DnD Sequence Panel ────────────────────────────── */}
-        <div style={{marginBottom:12,padding:"9px 11px",background:"#0E1118",borderRadius:7,border:"1px solid #1A1F2E"}}>
+        <div style={{marginBottom:12,padding:"9px 11px",background:"var(--surface)",borderRadius:7,border:"1px solid var(--border)"}}>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:7}}>
-            <span style={{fontSize:10,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em"}}>
+            <span style={{fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em"}}>
               ⠿ Secuencia de lotes — arrastra para reordenar
             </span>
             {customOrder[activeLine] && (
@@ -710,12 +1003,12 @@ Responde en español.`;
                 onDrop={()=>handleBatchDrop(idx)}
                 onDragEnd={()=>{setDragId(null);setDragOver(null);}}
                 style={{display:"flex",alignItems:"center",gap:4,padding:"3px 9px",borderRadius:5,
-                  background:dragId===batch.id?"rgba(245,158,11,.12)":"#141820",
-                  border:dragOver===idx&&dragId!==batch.id?"1px solid #F59E0B":"1px solid #252D3D",
+                  background:dragId===batch.id?"rgba(245,158,11,.12)":"var(--surface-2)",
+                  border:dragOver===idx&&dragId!==batch.id?"1px solid #F59E0B":"1px solid var(--border-2)",
                   cursor:"grab",opacity:dragId===batch.id?.4:1,fontSize:10,fontFamily:"'DM Mono',monospace",
                   userSelect:"none",transition:"border-color .1s,opacity .1s"}}>
                 <div style={{width:7,height:7,borderRadius:2,background:batch.color,flexShrink:0}}/>
-                <span style={{color:"#A0AABB"}}>{batch.orderId}-B{batch.batchNum}</span>
+                <span style={{color:"var(--text-muted)"}}>{batch.orderId}-B{batch.batchNum}</span>
                 {batch.isLate&&<span style={{color:"#F87171",fontSize:9}}>▲</span>}
               </div>
             ))}
@@ -728,9 +1021,9 @@ Responde en español.`;
             <div key={stage.id} style={{display:"grid",gridTemplateColumns:"155px 1fr",alignItems:"center",gap:10}}>
               <div>
                 <div style={{fontSize:12,fontWeight:500}}>{stage.name}</div>
-                <div style={{fontSize:10,color:"#6B7A9A",lineHeight:1.4}}>{line.machines.filter(m=>m.stageId===stage.id).map(m=>m.name).join(", ")}</div>
+                <div style={{fontSize:10,color:"var(--text-dim)",lineHeight:1.4}}>{line.machines.filter(m=>m.stageId===stage.id).map(m=>m.name).join(", ")}</div>
               </div>
-              <div style={{position:"relative",height:36,background:"#0E1118",borderRadius:5,border:"1px solid #1A1F2E",overflow:"hidden"}}>
+              <div style={{position:"relative",height:36,background:"var(--surface)",borderRadius:5,border:"1px solid var(--border)",overflow:"hidden"}}>
                 {/* shift background bands */}
                 {shiftBands.map((b,i)=>(
                   <div key={i} style={{position:"absolute",top:0,bottom:0,left:`${b.left}%`,width:`${b.width}%`,background:"rgba(52,211,153,.04)",borderLeft:"1px solid rgba(52,211,153,.07)",pointerEvents:"none"}}/>
@@ -745,7 +1038,7 @@ Responde en español.`;
                   return (
                     <div key={batch.id} style={{position:"absolute",top:4,height:28,left:`${left}%`,width:`${totalW}%`,display:"flex",borderRadius:4,overflow:"hidden",cursor:"pointer"}}
                       title={`${batch.skuName} · Lote ${batch.batchNum}/${batch.batchTotal}\nMáq: ${op.machineName}\nSetup: ${op.setupTime}min\n${op.startTime.toLocaleTimeString()} → ${op.endTime.toLocaleTimeString()}`}>
-                      {setupPct>0&&<div style={{width:`${setupPct}%`,background:"repeating-linear-gradient(-45deg,#2A3341,#2A3341 3px,#1A2130 3px,#1A2130 6px)",flexShrink:0}}/>}
+                      {setupPct>0&&<div style={{width:`${setupPct}%`,background:"repeating-linear-gradient(-45deg,var(--surface-3),var(--surface-3) 3px,var(--border-alt) 3px,var(--border-alt) 6px)",flexShrink:0}}/>}
                       <div style={{flex:1,background:batch.color,display:"flex",alignItems:"center",padding:"0 6px",opacity:.92,outline:batch.isLate?"2px solid #F87171":"none",outlineOffset:-1}}>
                         <span style={{fontSize:9,color:"rgba(255,255,255,.9)",fontWeight:600,fontFamily:"'DM Mono',monospace",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{batch.skuName.split(" ").slice(0,2).join(" ")}</span>
                       </div>
@@ -761,18 +1054,18 @@ Responde en español.`;
             <div style={{position:"relative",height:18}}>
               {Array.from({length:7}).map((_,i)=>{
                 const t=now+(span/6)*i;
-                return <span key={i} style={{position:"absolute",left:`${(i/6)*100}%`,fontSize:9,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",transform:"translateX(-50%)"}}>{fmtT(t)}</span>;
+                return <span key={i} style={{position:"absolute",left:`${(i/6)*100}%`,fontSize:9,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",transform:"translateX(-50%)"}}>{fmtT(t)}</span>;
               })}
             </div>
           </div>
         </div>
 
         {/* legend */}
-        <div style={{display:"flex",flexWrap:"wrap",gap:10,marginTop:14,paddingTop:12,borderTop:"1px solid #1A1F2E"}}>
-          <div style={{display:"flex",alignItems:"center",gap:5,fontSize:10,color:"#6B7A9A"}}><div style={{width:20,height:10,background:"repeating-linear-gradient(-45deg,#2A3341,#2A3341 3px,#1A2130 3px,#1A2130 6px)",borderRadius:2}}/>Setup</div>
-          <div style={{display:"flex",alignItems:"center",gap:5,fontSize:10,color:"#6B7A9A"}}><div style={{width:10,height:10,border:"2px solid #F87171",borderRadius:2}}/>Tardanza</div>
-          <div style={{display:"flex",alignItems:"center",gap:5,fontSize:10,color:"#6B7A9A"}}><div style={{width:10,height:10,background:"rgba(52,211,153,.15)",borderRadius:2,border:"1px solid rgba(52,211,153,.2)"}}/>Turno activo</div>
-          {line.skus.map(s=><div key={s.id} style={{display:"flex",alignItems:"center",gap:5,fontSize:10,color:"#6B7A9A"}}><div style={{width:10,height:10,borderRadius:2,background:s.color}}/>{s.name}</div>)}
+        <div style={{display:"flex",flexWrap:"wrap",gap:10,marginTop:14,paddingTop:12,borderTop:"1px solid var(--border)"}}>
+          <div style={{display:"flex",alignItems:"center",gap:5,fontSize:10,color:"var(--text-dim)"}}><div style={{width:20,height:10,background:"repeating-linear-gradient(-45deg,var(--surface-3),var(--surface-3) 3px,var(--border-alt) 3px,var(--border-alt) 6px)",borderRadius:2}}/>Setup</div>
+          <div style={{display:"flex",alignItems:"center",gap:5,fontSize:10,color:"var(--text-dim)"}}><div style={{width:10,height:10,border:"2px solid #F87171",borderRadius:2}}/>Tardanza</div>
+          <div style={{display:"flex",alignItems:"center",gap:5,fontSize:10,color:"var(--text-dim)"}}><div style={{width:10,height:10,background:"rgba(52,211,153,.15)",borderRadius:2,border:"1px solid rgba(52,211,153,.2)"}}/>Turno activo</div>
+          {line.skus.map(s=><div key={s.id} style={{display:"flex",alignItems:"center",gap:5,fontSize:10,color:"var(--text-dim)"}}><div style={{width:10,height:10,borderRadius:2,background:s.color}}/>{s.name}</div>)}
         </div>
       </div>
     );
@@ -783,12 +1076,12 @@ Responde en español.`;
   // ════════════════════════════════════════════════════════════
   const OrdersView = () => {
     const lineOrders=data.orders.filter(o=>o.lineId===activeLine);
-    const inputStyle = {background:"#0E1118",border:"1px solid #1A1F2E",color:"#D8DCE8",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none"};
+    const inputStyle = {background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none"};
     const dtToInput = (s) => { if(!s) return ""; const d = new Date(s); const z = n => String(n).padStart(2,"0"); return `${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())}T${z(d.getHours())}:${z(d.getMinutes())}`; };
     return (
       <div>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-          <div style={{fontSize:11,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em"}}>
+          <div style={{fontSize:11,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em"}}>
             {lineOrders.length} {lineOrders.length===1?"orden":"órdenes"} en {line?.name}
           </div>
           <button onClick={()=>handleAddOrder(activeLine)} disabled={!line.skus.length}
@@ -797,13 +1090,13 @@ Responde en español.`;
           </button>
         </div>
         {lineOrders.length===0 ? (
-          <div style={{textAlign:"center",padding:"40px 20px",color:"#6B7A9A",fontSize:13,background:"#0E1118",borderRadius:8,border:"1px dashed #1A1F2E"}}>
+          <div style={{textAlign:"center",padding:"40px 20px",color:"var(--text-dim)",fontSize:13,background:"var(--surface)",borderRadius:8,border:"1px dashed var(--border)"}}>
             {line.skus.length ? "Sin órdenes en esta línea. Usa + Agregar orden para empezar." : "Primero configura SKUs en la pestaña Configuración."}
           </div>
         ) : (
         <div style={{overflowX:"auto"}}>
         <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,minWidth:880}}>
-          <thead><tr>{["Orden","SKU","Cant.","Lotes","Fecha compromiso","Valor","Prior.","Estado","Plan",""].map(h=><th key={h} style={{textAlign:"left",fontSize:10,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"7px 10px",borderBottom:"1px solid #1A1F2E",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
+          <thead><tr>{["Orden","SKU","Cant.","Lotes","Fecha compromiso","Valor","Prior.","Estado","Plan",""].map(h=><th key={h} style={{textAlign:"left",fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"7px 10px",borderBottom:"1px solid var(--border)",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
           <tbody>
             {lineOrders.map(order=>{
               const sku=line.skus.find(s=>s.id===order.skuId);
@@ -811,11 +1104,11 @@ Responde en español.`;
               const sb=schedule.batches.find(b=>b.orderId===order.id);
               const sc=STATUS_COLORS[sb?.isLate?"late":order.status]||STATUS_COLORS.pending;
               return (
-                <tr key={order.id} style={{borderBottom:"1px solid #0E1118"}}>
-                  <td style={{padding:"7px 10px",fontFamily:"'DM Mono',monospace",fontSize:11,color:"#6B7A9A",whiteSpace:"nowrap"}}>{order.id}</td>
+                <tr key={order.id} style={{borderBottom:"1px solid var(--surface)"}}>
+                  <td style={{padding:"7px 10px",fontFamily:"'DM Mono',monospace",fontSize:11,color:"var(--text-dim)",whiteSpace:"nowrap"}}>{order.id}</td>
                   <td style={{padding:"7px 10px"}}>
                     <div style={{display:"flex",alignItems:"center",gap:6}}>
-                      <span style={{display:"inline-block",width:8,height:8,borderRadius:2,background:sku?.color||"#252D3D",flexShrink:0}}/>
+                      <span style={{display:"inline-block",width:8,height:8,borderRadius:2,background:sku?.color||"var(--border-2)",flexShrink:0}}/>
                       <select value={order.skuId} onChange={e=>handleUpdateOrder(order.id,"skuId",e.target.value)} style={{...inputStyle,minWidth:150}}>
                         {line.skus.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
                         {!sku&&<option value={order.skuId}>⚠ {order.skuId} (eliminado)</option>}
@@ -825,7 +1118,7 @@ Responde en español.`;
                   <td style={{padding:"7px 10px"}}>
                     <input type="number" min="1" value={order.qty} onChange={e=>handleUpdateOrder(order.id,"qty",e.target.value)} style={{...inputStyle,width:60}}/>
                   </td>
-                  <td style={{padding:"7px 10px",fontFamily:"'DM Mono',monospace",fontSize:11,color:"#6B7A9A"}}>{bc}</td>
+                  <td style={{padding:"7px 10px",fontFamily:"'DM Mono',monospace",fontSize:11,color:"var(--text-dim)"}}>{bc}</td>
                   <td style={{padding:"7px 10px"}}>
                     <input type="datetime-local" value={dtToInput(order.dueDate)} onChange={e=>handleUpdateOrder(order.id,"dueDate",e.target.value)} style={{...inputStyle,width:175,colorScheme:"dark"}}/>
                   </td>
@@ -878,26 +1171,29 @@ Responde en español.`;
     return (
       <div>
         {/* Header row */}
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:18}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:18,flexWrap:"wrap",gap:12}}>
           <div>
             <div style={{fontSize:13,fontWeight:600,fontFamily:"'Syne',sans-serif"}}>Metas de Facturación Diaria</div>
-            <div style={{fontSize:11,color:"#6B7A9A",marginTop:2}}>{line?.name}</div>
+            <div style={{fontSize:11,color:"var(--text-dim)",marginTop:2}}>{line?.name} · <span style={{color:"#34D399",fontFamily:"'DM Mono',monospace"}}>valores en COP</span></div>
           </div>
-          <div style={{textAlign:"right",padding:"8px 14px",background:"#0E1118",borderRadius:8,border:"1px solid #1A1F2E"}}>
-            <div style={{fontSize:9,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em"}}>Meta Global</div>
-            <div style={{fontSize:20,fontWeight:700,fontFamily:"'Syne',sans-serif",color:billingPct>=100?"#34D399":billingPct>=70?"#FBBF24":"#F87171",lineHeight:1.1}}>{billingPct.toFixed(0)}%</div>
-            <div style={{height:3,background:"#1A1F2E",borderRadius:2,margin:"5px 0",overflow:"hidden"}}><div style={{height:"100%",width:`${billingPct}%`,background:billingPct>=100?"#34D399":billingPct>=70?"#FBBF24":"#F87171",transition:"width .6s"}}/></div>
-            <div style={{fontSize:10,color:"#6B7A9A",fontFamily:"'DM Mono',monospace"}}>${totalValue.toLocaleString()} / ${data.billingGoal.toLocaleString()}</div>
+          <div style={{display:"flex",gap:10,alignItems:"flex-start",flexWrap:"wrap"}}>
+            <button onClick={()=>setShowHorizonModal(true)} style={{padding:"7px 14px",borderRadius:7,background:"rgba(245,158,11,.1)",border:"1px solid rgba(245,158,11,.3)",color:"#F59E0B",cursor:"pointer",fontSize:11,fontFamily:"'DM Mono',monospace",height:"fit-content"}}>📅 Elegir horizonte</button>
+            <div style={{textAlign:"right",padding:"8px 14px",background:"var(--surface)",borderRadius:8,border:"1px solid var(--border)"}}>
+              <div style={{fontSize:9,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em"}}>Meta Global (COP)</div>
+              <div style={{fontSize:20,fontWeight:700,fontFamily:"'Syne',sans-serif",color:billingPct>=100?"#34D399":billingPct>=70?"#FBBF24":"#F87171",lineHeight:1.1}}>{billingPct.toFixed(0)}%</div>
+              <div style={{height:3,background:"var(--border)",borderRadius:2,margin:"5px 0",overflow:"hidden"}}><div style={{height:"100%",width:`${billingPct}%`,background:billingPct>=100?"#34D399":billingPct>=70?"#FBBF24":"#F87171",transition:"width .6s"}}/></div>
+              <div style={{fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace"}}>${totalValue.toLocaleString("es-CO")} / ${data.billingGoal.toLocaleString("es-CO")}</div>
+            </div>
           </div>
         </div>
 
         {/* Bar chart */}
-        <div style={{display:"flex",gap:6,alignItems:"flex-end",padding:"0 4px 22px",borderBottom:"1px solid #1A1F2E",marginBottom:16,minHeight:140}}>
+        <div style={{display:"flex",gap:6,alignItems:"flex-end",padding:"0 4px 22px",borderBottom:"1px solid var(--border)",marginBottom:16,minHeight:140}}>
           {allDates.map(date => {
             const goal=lineGoals[date]||0, proj=lineProj[date]||0;
             const goalH=(goal/maxVal)*100, projH=(proj/maxVal)*100;
             const pct=goal>0?(proj/goal)*100:null;
-            const c=pct===null?"#6B7A9A":pct>=100?"#34D399":pct>=70?"#FBBF24":"#F87171";
+            const c=pct===null?"var(--text-dim)":pct>=100?"#34D399":pct>=70?"#FBBF24":"#F87171";
             const isToday=date===todayKey;
             const d=new Date(date+"T12:00:00");
             return (
@@ -909,7 +1205,7 @@ Responde en español.`;
                   {goal>0&&<div style={{position:"absolute",left:0,right:0,bottom:0,height:`${goalH}%`,border:"1px dashed rgba(245,158,11,.35)",borderRadius:4,background:"rgba(245,158,11,.04)"}}/>}
                   <div style={{width:"100%",height:`${Math.max(projH,2)}%`,background:c,borderRadius:"4px 4px 0 0",opacity:.85,transition:"height .4s"}}/>
                 </div>
-                <div style={{fontSize:9,color:isToday?"#F59E0B":"#6B7A9A",textAlign:"center",lineHeight:1.3,fontFamily:"'DM Mono',monospace",fontWeight:isToday?600:400}}>
+                <div style={{fontSize:9,color:isToday?"#F59E0B":"var(--text-dim)",textAlign:"center",lineHeight:1.3,fontFamily:"'DM Mono',monospace",fontWeight:isToday?600:400}}>
                   {d.toLocaleDateString("es-MX",{day:"2-digit",month:"short"})}
                 </div>
                 {goal>0&&<div style={{fontSize:8,color:"rgba(245,158,11,.6)",fontFamily:"'DM Mono',monospace",whiteSpace:"nowrap"}}>meta ${(goal/1000).toFixed(0)}K</div>}
@@ -922,41 +1218,41 @@ Responde en español.`;
         {/* Editable table */}
         <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
           <thead><tr>
-            {["Fecha","Meta del día ($)","Proyectado","Cumplimiento",""].map(h=>(
-              <th key={h} style={{textAlign:"left",fontSize:10,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"7px 10px",borderBottom:"1px solid #1A1F2E"}}>{h}</th>
+            {["Fecha","Meta del día (COP)","Proyectado (COP)","Cumplimiento",""].map(h=>(
+              <th key={h} style={{textAlign:"left",fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"7px 10px",borderBottom:"1px solid var(--border)"}}>{h}</th>
             ))}
           </tr></thead>
           <tbody>
             {allDates.map(date=>{
               const goal=lineGoals[date]||0, proj=lineProj[date]||0;
               const pct=goal>0?Math.min(100,(proj/goal)*100):null;
-              const c=pct===null?"#6B7A9A":pct>=100?"#34D399":pct>=70?"#FBBF24":"#F87171";
+              const c=pct===null?"var(--text-dim)":pct>=100?"#34D399":pct>=70?"#FBBF24":"#F87171";
               const isToday=date===todayKey;
               const d=new Date(date+"T12:00:00");
               return (
-                <tr key={date} style={{borderBottom:"1px solid #0E1118",background:isToday?"rgba(245,158,11,.025)":"transparent"}}>
+                <tr key={date} style={{borderBottom:"1px solid var(--surface)",background:isToday?"rgba(245,158,11,.025)":"transparent"}}>
                   <td style={{padding:"9px 10px",fontFamily:"'DM Mono',monospace",fontSize:11}}>
-                    <span style={{color:isToday?"#F59E0B":undefined}}>{d.toLocaleDateString("es-MX",{weekday:"short",day:"2-digit",month:"short"})}</span>
+                    <span style={{color:isToday?"#F59E0B":undefined}}>{d.toLocaleDateString("es-CO",{weekday:"short",day:"2-digit",month:"short"})}</span>
                     {isToday&&<span style={{marginLeft:6,fontSize:9,background:"rgba(245,158,11,.15)",color:"#F59E0B",borderRadius:3,padding:"1px 5px"}}>HOY</span>}
                   </td>
                   <td style={{padding:"9px 10px"}}>
                     <input type="number" value={goal||""} placeholder="—"
                       onChange={e=>handleDailyGoalUpdate(activeLine,date,e.target.value)}
-                      style={{width:110,background:"#141820",border:"1px solid #252D3D",color:"#D8DCE8",padding:"4px 8px",borderRadius:5,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none"}}/>
+                      style={{width:130,background:"var(--surface-2)",border:"1px solid var(--border-2)",color:"var(--text)",padding:"4px 8px",borderRadius:5,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none"}}/>
                   </td>
-                  <td style={{padding:"9px 10px",fontFamily:"'DM Mono',monospace",fontSize:11,color:"#34D399"}}>{proj>0?`$${proj.toLocaleString()}`:"—"}</td>
+                  <td style={{padding:"9px 10px",fontFamily:"'DM Mono',monospace",fontSize:11,color:"#34D399"}}>{proj>0?`$${proj.toLocaleString("es-CO")}`:"—"}</td>
                   <td style={{padding:"9px 10px"}}>
                     {pct!==null?(
                       <div style={{display:"flex",alignItems:"center",gap:8}}>
-                        <div style={{width:60,height:4,background:"#1A1F2E",borderRadius:2,overflow:"hidden"}}>
+                        <div style={{width:60,height:4,background:"var(--border)",borderRadius:2,overflow:"hidden"}}>
                           <div style={{height:"100%",width:`${pct}%`,background:c,transition:"width .5s"}}/>
                         </div>
                         <span style={{fontSize:11,color:c,fontFamily:"'DM Mono',monospace"}}>{pct.toFixed(0)}%</span>
                       </div>
-                    ):<span style={{color:"#6B7A9A",fontSize:11}}>—</span>}
+                    ):<span style={{color:"var(--text-dim)",fontSize:11}}>—</span>}
                   </td>
                   <td style={{padding:"9px 10px"}}>
-                    {!lineGoals[date]&&<button onClick={()=>handleDailyGoalUpdate(activeLine,date,80000)} style={{fontSize:10,padding:"2px 8px",borderRadius:4,background:"#1A1F2E",border:"1px solid #252D3D",color:"#6B7A9A",cursor:"pointer"}}>+ Meta</button>}
+                    {!lineGoals[date]&&<button onClick={()=>handleDailyGoalUpdate(activeLine,date,80000)} style={{fontSize:10,padding:"2px 8px",borderRadius:4,background:"var(--border)",border:"1px solid var(--border-2)",color:"var(--text-dim)",cursor:"pointer"}}>+ Meta</button>}
                   </td>
                 </tr>
               );
@@ -964,9 +1260,10 @@ Responde en español.`;
           </tbody>
         </table>
         <div style={{marginTop:12,display:"flex",gap:8,alignItems:"center"}}>
-          <span style={{fontSize:11,color:"#6B7A9A"}}>Agregar fecha:</span>
-          <input type="date" style={{background:"#141820",border:"1px solid #252D3D",color:"#D8DCE8",padding:"4px 8px",borderRadius:5,fontSize:11,outline:"none",cursor:"pointer",colorScheme:"dark"}}
+          <span style={{fontSize:11,color:"var(--text-dim)"}}>Agregar fecha individual:</span>
+          <input type="date" style={{background:"var(--surface-2)",border:"1px solid var(--border-2)",color:"var(--text)",padding:"4px 8px",borderRadius:5,fontSize:11,outline:"none",cursor:"pointer",colorScheme:themeMode==="dark"?"dark":"light"}}
             onChange={e=>{if(e.target.value&&!lineGoals[e.target.value])handleDailyGoalUpdate(activeLine,e.target.value,80000);}}/>
+          <span style={{fontSize:10,color:"var(--text-dim)",marginLeft:6}}>· o usa <strong style={{color:"#F59E0B"}}>📅 Elegir horizonte</strong> para crear varios días</span>
         </div>
       </div>
     );
@@ -987,25 +1284,25 @@ Responde en español.`;
       <div>
         <div style={{display:"flex",gap:4,marginBottom:14,flexWrap:"wrap"}}>
           {subTabs.map(([id,lbl])=>(
-            <button key={id} onClick={()=>setActiveConfigTab(id)} style={{padding:"5px 12px",borderRadius:5,fontSize:11,fontFamily:"'DM Mono',monospace",color:activeConfigTab===id?"#F59E0B":"#6B7A9A",background:activeConfigTab===id?"#1A1F2E":"none",border:activeConfigTab===id?"1px solid #252D3D":"1px solid transparent",cursor:"pointer"}}>{lbl}</button>
+            <button key={id} onClick={()=>setActiveConfigTab(id)} style={{padding:"5px 12px",borderRadius:5,fontSize:11,fontFamily:"'DM Mono',monospace",color:activeConfigTab===id?"#F59E0B":"var(--text-dim)",background:activeConfigTab===id?"var(--border)":"none",border:activeConfigTab===id?"1px solid var(--border-2)":"1px solid transparent",cursor:"pointer"}}>{lbl}</button>
           ))}
         </div>
 
         {activeConfigTab==="stages"&&(
           <div>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-              <div style={{fontSize:11,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em"}}>{line.stages.length} etapas en {line?.name}</div>
+              <div style={{fontSize:11,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em"}}>{line.stages.length} etapas en {line?.name}</div>
               <button onClick={()=>handleAddStage(activeLine)} style={{fontSize:11,padding:"5px 12px",borderRadius:5,background:"rgba(245,158,11,.1)",border:"1px solid rgba(245,158,11,.3)",color:"#F59E0B",cursor:"pointer",fontFamily:"'DM Mono',monospace"}}>+ Agregar etapa</button>
             </div>
-            {line.stages.length===0 ? <div style={{textAlign:"center",padding:"30px",color:"#6B7A9A",fontSize:13,background:"#0E1118",borderRadius:8,border:"1px dashed #1A1F2E"}}>Sin etapas. Agrega la primera para empezar a definir el ruteo.</div> : (
+            {line.stages.length===0 ? <div style={{textAlign:"center",padding:"30px",color:"var(--text-dim)",fontSize:13,background:"var(--surface)",borderRadius:8,border:"1px dashed var(--border)"}}>Sin etapas. Agrega la primera para empezar a definir el ruteo.</div> : (
             <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-              <thead><tr>{["ID","Etapa","Orden","Máquinas",""].map(h=><th key={h} style={{textAlign:"left",fontSize:10,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"7px 10px",borderBottom:"1px solid #1A1F2E"}}>{h}</th>)}</tr></thead>
+              <thead><tr>{["ID","Etapa","Orden","Máquinas",""].map(h=><th key={h} style={{textAlign:"left",fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"7px 10px",borderBottom:"1px solid var(--border)"}}>{h}</th>)}</tr></thead>
               <tbody>{line.stages.sort((a,b)=>a.order-b.order).map(s=>(
-                <tr key={s.id} style={{borderBottom:"1px solid #0E1118"}}>
-                  <td style={{padding:"7px 10px",fontFamily:"'DM Mono',monospace",fontSize:11,color:"#6B7A9A"}}>{s.id}</td>
-                  <td style={{padding:"7px 10px"}}><input value={s.name} onChange={e=>handleUpdateStage(activeLine,s.id,"name",e.target.value)} style={{background:"#0E1118",border:"1px solid #1A1F2E",color:"#D8DCE8",padding:"4px 7px",borderRadius:4,fontSize:12,outline:"none",width:"100%",maxWidth:240}}/></td>
-                  <td style={{padding:"7px 10px"}}><input type="number" min="1" value={s.order} onChange={e=>handleUpdateStage(activeLine,s.id,"order",e.target.value)} style={{background:"#0E1118",border:"1px solid #1A1F2E",color:"#D8DCE8",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:56}}/></td>
-                  <td style={{padding:"7px 10px"}}>{line.machines.filter(m=>m.stageId===s.id).map(m=><span key={m.id} style={{display:"inline-block",background:"#1A1F2E",borderRadius:4,padding:"1px 7px",fontSize:10,margin:2,color:"#A0AABB"}}>{m.name}</span>)||<span style={{color:"#6B7A9A",fontSize:10}}>—</span>}</td>
+                <tr key={s.id} style={{borderBottom:"1px solid var(--surface)"}}>
+                  <td style={{padding:"7px 10px",fontFamily:"'DM Mono',monospace",fontSize:11,color:"var(--text-dim)"}}>{s.id}</td>
+                  <td style={{padding:"7px 10px"}}><input value={s.name} onChange={e=>handleUpdateStage(activeLine,s.id,"name",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontSize:12,outline:"none",width:"100%",maxWidth:240}}/></td>
+                  <td style={{padding:"7px 10px"}}><input type="number" min="1" value={s.order} onChange={e=>handleUpdateStage(activeLine,s.id,"order",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:56}}/></td>
+                  <td style={{padding:"7px 10px"}}>{line.machines.filter(m=>m.stageId===s.id).map(m=><span key={m.id} style={{display:"inline-block",background:"var(--border)",borderRadius:4,padding:"1px 7px",fontSize:10,margin:2,color:"var(--text-muted)"}}>{m.name}</span>)||<span style={{color:"var(--text-dim)",fontSize:10}}>—</span>}</td>
                   <td style={{padding:"7px 6px"}}><button onClick={()=>handleRemoveStage(activeLine,s.id)} title="Eliminar etapa (también borra sus máquinas)" style={{width:22,height:22,borderRadius:4,background:"rgba(248,113,113,.08)",border:"1px solid rgba(248,113,113,.2)",color:"#F87171",cursor:"pointer",fontSize:13,lineHeight:1}}>×</button></td>
                 </tr>
               ))}</tbody>
@@ -1016,19 +1313,26 @@ Responde en español.`;
 
         {activeConfigTab==="machines"&&(
           <div>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-              <div style={{fontSize:11,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em"}}>{line.machines.length} máquinas en {line?.name}</div>
-              <button onClick={()=>handleAddMachine(activeLine)} disabled={!line.stages.length} style={{fontSize:11,padding:"5px 12px",borderRadius:5,background:"rgba(245,158,11,.1)",border:"1px solid rgba(245,158,11,.3)",color:"#F59E0B",cursor:line.stages.length?"pointer":"not-allowed",opacity:line.stages.length?1:.4,fontFamily:"'DM Mono',monospace"}}>+ Agregar máquina</button>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,flexWrap:"wrap",gap:8}}>
+              <div style={{fontSize:11,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em"}}>{line.machines.length} máquinas en {line?.name}</div>
+              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                <button onClick={handleDownloadTemplate} title="Descargar plantilla Excel con SKUs y Máquinas de esta línea" style={{fontSize:11,padding:"5px 12px",borderRadius:5,background:"rgba(52,211,153,.08)",border:"1px solid rgba(52,211,153,.25)",color:"#34D399",cursor:"pointer",fontFamily:"'DM Mono',monospace"}}>↓ Plantilla Excel</button>
+                <label title="Importar SKUs y Máquinas desde Excel" style={{fontSize:11,padding:"5px 12px",borderRadius:5,background:"rgba(56,189,248,.08)",border:"1px solid rgba(56,189,248,.25)",color:"#38BDF8",cursor:"pointer",fontFamily:"'DM Mono',monospace"}}>
+                  ↑ Importar Excel
+                  <input type="file" accept=".xlsx,.xls" onChange={handleImportExcel} style={{display:"none"}}/>
+                </label>
+                <button onClick={()=>handleAddMachine(activeLine)} disabled={!line.stages.length} style={{fontSize:11,padding:"5px 12px",borderRadius:5,background:"rgba(245,158,11,.1)",border:"1px solid rgba(245,158,11,.3)",color:"#F59E0B",cursor:line.stages.length?"pointer":"not-allowed",opacity:line.stages.length?1:.4,fontFamily:"'DM Mono',monospace"}}>+ Agregar máquina</button>
+              </div>
             </div>
-            {line.machines.length===0 ? <div style={{textAlign:"center",padding:"30px",color:"#6B7A9A",fontSize:13,background:"#0E1118",borderRadius:8,border:"1px dashed #1A1F2E"}}>{line.stages.length?"Sin máquinas. Agrega la primera.":"Define al menos una etapa antes de agregar máquinas."}</div> : (
+            {line.machines.length===0 ? <div style={{textAlign:"center",padding:"30px",color:"var(--text-dim)",fontSize:13,background:"var(--surface)",borderRadius:8,border:"1px dashed var(--border)"}}>{line.stages.length?"Sin máquinas. Agrega la primera.":"Define al menos una etapa antes de agregar máquinas."}</div> : (
             <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-              <thead><tr>{["ID","Máquina","Etapa","Cap./hora",""].map(h=><th key={h} style={{textAlign:"left",fontSize:10,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"7px 10px",borderBottom:"1px solid #1A1F2E"}}>{h}</th>)}</tr></thead>
+              <thead><tr>{["ID","Máquina","Etapa","Cap./hora",""].map(h=><th key={h} style={{textAlign:"left",fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"7px 10px",borderBottom:"1px solid var(--border)"}}>{h}</th>)}</tr></thead>
               <tbody>{line.machines.map(m=>(
-                <tr key={m.id} style={{borderBottom:"1px solid #0E1118"}}>
-                  <td style={{padding:"7px 10px",fontFamily:"'DM Mono',monospace",fontSize:11,color:"#6B7A9A"}}>{m.id}</td>
-                  <td style={{padding:"7px 10px"}}><input value={m.name} onChange={e=>handleUpdateMachine(activeLine,m.id,"name",e.target.value)} style={{background:"#0E1118",border:"1px solid #1A1F2E",color:"#D8DCE8",padding:"4px 7px",borderRadius:4,fontSize:12,outline:"none",width:"100%",maxWidth:200}}/></td>
-                  <td style={{padding:"7px 10px"}}><select value={m.stageId} onChange={e=>handleUpdateMachine(activeLine,m.id,"stageId",e.target.value)} style={{background:"#0E1118",border:"1px solid #1A1F2E",color:"#F59E0B",padding:"4px 7px",borderRadius:4,fontSize:11,outline:"none",fontFamily:"'DM Mono',monospace"}}>{line.stages.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select></td>
-                  <td style={{padding:"7px 10px"}}><input type="number" min="1" value={m.capacityPerHour} onChange={e=>handleUpdateMachine(activeLine,m.id,"capacityPerHour",e.target.value)} style={{background:"#0E1118",border:"1px solid #1A1F2E",color:"#D8DCE8",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:72}}/><span style={{fontSize:10,color:"#6B7A9A",marginLeft:5,fontFamily:"'DM Mono',monospace"}}>pzs/h</span></td>
+                <tr key={m.id} style={{borderBottom:"1px solid var(--surface)"}}>
+                  <td style={{padding:"7px 10px",fontFamily:"'DM Mono',monospace",fontSize:11,color:"var(--text-dim)"}}>{m.id}</td>
+                  <td style={{padding:"7px 10px"}}><input value={m.name} onChange={e=>handleUpdateMachine(activeLine,m.id,"name",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontSize:12,outline:"none",width:"100%",maxWidth:200}}/></td>
+                  <td style={{padding:"7px 10px"}}><select value={m.stageId} onChange={e=>handleUpdateMachine(activeLine,m.id,"stageId",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"#F59E0B",padding:"4px 7px",borderRadius:4,fontSize:11,outline:"none",fontFamily:"'DM Mono',monospace"}}>{line.stages.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select></td>
+                  <td style={{padding:"7px 10px"}}><input type="number" min="1" value={m.capacityPerHour} onChange={e=>handleUpdateMachine(activeLine,m.id,"capacityPerHour",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:72}}/><span style={{fontSize:10,color:"var(--text-dim)",marginLeft:5,fontFamily:"'DM Mono',monospace"}}>pzs/h</span></td>
                   <td style={{padding:"7px 6px"}}><button onClick={()=>handleRemoveMachine(activeLine,m.id)} title="Eliminar" style={{width:22,height:22,borderRadius:4,background:"rgba(248,113,113,.08)",border:"1px solid rgba(248,113,113,.2)",color:"#F87171",cursor:"pointer",fontSize:13,lineHeight:1}}>×</button></td>
                 </tr>
               ))}</tbody>
@@ -1039,24 +1343,31 @@ Responde en español.`;
 
         {activeConfigTab==="skus"&&(
           <div>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-              <div style={{fontSize:11,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em"}}>{line.skus.length} SKUs en {line?.name}</div>
-              <button onClick={()=>handleAddSku(activeLine)} disabled={!line.stages.length} style={{fontSize:11,padding:"5px 12px",borderRadius:5,background:"rgba(245,158,11,.1)",border:"1px solid rgba(245,158,11,.3)",color:"#F59E0B",cursor:line.stages.length?"pointer":"not-allowed",opacity:line.stages.length?1:.4,fontFamily:"'DM Mono',monospace"}}>+ Agregar SKU</button>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,flexWrap:"wrap",gap:8}}>
+              <div style={{fontSize:11,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em"}}>{line.skus.length} SKUs en {line?.name}</div>
+              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                <button onClick={handleDownloadTemplate} title="Descargar plantilla Excel con SKUs y Máquinas de esta línea" style={{fontSize:11,padding:"5px 12px",borderRadius:5,background:"rgba(52,211,153,.08)",border:"1px solid rgba(52,211,153,.25)",color:"#34D399",cursor:"pointer",fontFamily:"'DM Mono',monospace"}}>↓ Plantilla Excel</button>
+                <label title="Importar SKUs y Máquinas desde Excel" style={{fontSize:11,padding:"5px 12px",borderRadius:5,background:"rgba(56,189,248,.08)",border:"1px solid rgba(56,189,248,.25)",color:"#38BDF8",cursor:"pointer",fontFamily:"'DM Mono',monospace"}}>
+                  ↑ Importar Excel
+                  <input type="file" accept=".xlsx,.xls" onChange={handleImportExcel} style={{display:"none"}}/>
+                </label>
+                <button onClick={()=>handleAddSku(activeLine)} disabled={!line.stages.length} style={{fontSize:11,padding:"5px 12px",borderRadius:5,background:"rgba(245,158,11,.1)",border:"1px solid rgba(245,158,11,.3)",color:"#F59E0B",cursor:line.stages.length?"pointer":"not-allowed",opacity:line.stages.length?1:.4,fontFamily:"'DM Mono',monospace"}}>+ Agregar SKU</button>
+              </div>
             </div>
-            {line.skus.length===0 ? <div style={{textAlign:"center",padding:"30px",color:"#6B7A9A",fontSize:13,background:"#0E1118",borderRadius:8,border:"1px dashed #1A1F2E"}}>{line.stages.length?"Sin SKUs. Agrega el primero.":"Define etapas antes de agregar SKUs."}</div> : (
+            {line.skus.length===0 ? <div style={{textAlign:"center",padding:"30px",color:"var(--text-dim)",fontSize:13,background:"var(--surface)",borderRadius:8,border:"1px dashed var(--border)"}}>{line.stages.length?"Sin SKUs. Agrega el primero.":"Define etapas antes de agregar SKUs."}</div> : (
             <div style={{overflowX:"auto"}}>
               <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-                <thead><tr>{["Color","ID","Nombre","Familia","Lote"].concat(line.stages.sort((a,b)=>a.order-b.order).map(s=>s.name+" (min)")).concat([""]).map(h=><th key={h} style={{textAlign:"left",fontSize:10,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"7px 8px",borderBottom:"1px solid #1A1F2E",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
+                <thead><tr>{["Color","ID","Nombre","Familia","Lote"].concat(line.stages.sort((a,b)=>a.order-b.order).map(s=>s.name+" (min)")).concat([""]).map(h=><th key={h} style={{textAlign:"left",fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"7px 8px",borderBottom:"1px solid var(--border)",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
                 <tbody>{line.skus.map(sku=>(
-                  <tr key={sku.id} style={{borderBottom:"1px solid #0E1118"}}>
-                    <td style={{padding:"7px 8px"}}><input type="color" value={sku.color} onChange={e=>handleUpdateSku(activeLine,sku.id,"color",e.target.value)} style={{width:28,height:22,border:"1px solid #1A1F2E",borderRadius:4,background:"transparent",cursor:"pointer",padding:0}}/></td>
-                    <td style={{padding:"7px 8px",fontFamily:"'DM Mono',monospace",fontSize:11,color:"#6B7A9A"}}>{sku.id}</td>
-                    <td style={{padding:"7px 8px"}}><input value={sku.name} onChange={e=>handleUpdateSku(activeLine,sku.id,"name",e.target.value)} style={{background:"#0E1118",border:"1px solid #1A1F2E",color:"#D8DCE8",padding:"4px 7px",borderRadius:4,fontSize:12,outline:"none",minWidth:160}}/></td>
-                    <td style={{padding:"7px 8px"}}><input value={sku.family} onChange={e=>handleUpdateSku(activeLine,sku.id,"family",e.target.value)} style={{background:"#0E1118",border:"1px solid #1A1F2E",color:"#A0AABB",padding:"4px 7px",borderRadius:4,fontSize:11,outline:"none",width:100}}/></td>
-                    <td style={{padding:"7px 8px"}}><input type="number" min="1" value={sku.batchSize} onChange={e=>handleUpdateSku(activeLine,sku.id,"batchSize",e.target.value)} style={{background:"#0E1118",border:"1px solid #1A1F2E",color:"#D8DCE8",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:54}}/></td>
+                  <tr key={sku.id} style={{borderBottom:"1px solid var(--surface)"}}>
+                    <td style={{padding:"7px 8px"}}><input type="color" value={sku.color} onChange={e=>handleUpdateSku(activeLine,sku.id,"color",e.target.value)} style={{width:28,height:22,border:"1px solid var(--border)",borderRadius:4,background:"transparent",cursor:"pointer",padding:0}}/></td>
+                    <td style={{padding:"7px 8px",fontFamily:"'DM Mono',monospace",fontSize:11,color:"var(--text-dim)"}}>{sku.id}</td>
+                    <td style={{padding:"7px 8px"}}><input value={sku.name} onChange={e=>handleUpdateSku(activeLine,sku.id,"name",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontSize:12,outline:"none",minWidth:160}}/></td>
+                    <td style={{padding:"7px 8px"}}><input value={sku.family} onChange={e=>handleUpdateSku(activeLine,sku.id,"family",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text-muted)",padding:"4px 7px",borderRadius:4,fontSize:11,outline:"none",width:100}}/></td>
+                    <td style={{padding:"7px 8px"}}><input type="number" min="1" value={sku.batchSize} onChange={e=>handleUpdateSku(activeLine,sku.id,"batchSize",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:54}}/></td>
                     {line.stages.sort((a,b)=>a.order-b.order).map(s=>(
                       <td key={s.id} style={{padding:"7px 8px"}}>
-                        <input type="number" min="0" value={sku.stageTimes?.[s.id]||0} onChange={e=>handleUpdateSkuStageTime(activeLine,sku.id,s.id,e.target.value)} style={{background:"#0E1118",border:"1px solid #1A1F2E",color:"#D8DCE8",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:54}}/>
+                        <input type="number" min="0" value={sku.stageTimes?.[s.id]||0} onChange={e=>handleUpdateSkuStageTime(activeLine,sku.id,s.id,e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:54}}/>
                       </td>
                     ))}
                     <td style={{padding:"7px 6px"}}><button onClick={()=>handleRemoveSku(activeLine,sku.id)} title="Eliminar SKU (limpia matriz setup y secuencias)" style={{width:22,height:22,borderRadius:4,background:"rgba(248,113,113,.08)",border:"1px solid rgba(248,113,113,.2)",color:"#F87171",cursor:"pointer",fontSize:13,lineHeight:1}}>×</button></td>
@@ -1070,32 +1381,32 @@ Responde en español.`;
 
         {activeConfigTab==="forbidden"&&(
           <div>
-            <div style={{fontSize:12,color:"#6B7A9A",background:"#0E1118",borderRadius:7,padding:"10px 14px",marginBottom:12,lineHeight:1.6}}>El SKU "Después" no puede programarse inmediatamente después del SKU "Antes" en la misma línea.</div>
+            <div style={{fontSize:12,color:"var(--text-dim)",background:"var(--surface)",borderRadius:7,padding:"10px 14px",marginBottom:12,lineHeight:1.6}}>El SKU "Después" no puede programarse inmediatamente después del SKU "Antes" en la misma línea.</div>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-              <div style={{fontSize:11,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em"}}>{line.forbiddenSequences.length} reglas activas</div>
+              <div style={{fontSize:11,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em"}}>{line.forbiddenSequences.length} reglas activas</div>
               <button onClick={()=>handleAddForbidden(activeLine)} disabled={line.skus.length<2} style={{fontSize:11,padding:"5px 12px",borderRadius:5,background:"rgba(245,158,11,.1)",border:"1px solid rgba(245,158,11,.3)",color:"#F59E0B",cursor:line.skus.length>=2?"pointer":"not-allowed",opacity:line.skus.length>=2?1:.4,fontFamily:"'DM Mono',monospace"}}>+ Agregar regla</button>
             </div>
             {line.forbiddenSequences.length===0
-              ?<div style={{textAlign:"center",padding:"30px",color:"#6B7A9A",fontSize:13,background:"#0E1118",borderRadius:8,border:"1px dashed #1A1F2E"}}>{line.skus.length>=2?"Sin rutas prohibidas. Agrega la primera regla.":"Necesitas al menos 2 SKUs para definir reglas."}</div>
+              ?<div style={{textAlign:"center",padding:"30px",color:"var(--text-dim)",fontSize:13,background:"var(--surface)",borderRadius:8,border:"1px dashed var(--border)"}}>{line.skus.length>=2?"Sin rutas prohibidas. Agrega la primera regla.":"Necesitas al menos 2 SKUs para definir reglas."}</div>
               :<table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-                <thead><tr>{["ID","Antes →","Después","Razón",""].map(h=><th key={h} style={{textAlign:"left",fontSize:10,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"7px 10px",borderBottom:"1px solid #1A1F2E"}}>{h}</th>)}</tr></thead>
+                <thead><tr>{["ID","Antes →","Después","Razón",""].map(h=><th key={h} style={{textAlign:"left",fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"7px 10px",borderBottom:"1px solid var(--border)"}}>{h}</th>)}</tr></thead>
                 <tbody>{line.forbiddenSequences.map(f=>{
                   const fs=line.skus.find(s=>s.id===f.from),ts=line.skus.find(s=>s.id===f.to);
-                  return (<tr key={f.id} style={{borderBottom:"1px solid #0E1118"}}>
-                    <td style={{padding:"7px 10px",fontFamily:"'DM Mono',monospace",fontSize:11,color:"#6B7A9A"}}>{f.id}</td>
+                  return (<tr key={f.id} style={{borderBottom:"1px solid var(--surface)"}}>
+                    <td style={{padding:"7px 10px",fontFamily:"'DM Mono',monospace",fontSize:11,color:"var(--text-dim)"}}>{f.id}</td>
                     <td style={{padding:"7px 10px"}}>
                       <div style={{display:"flex",alignItems:"center",gap:6}}>
-                        <span style={{display:"inline-block",width:8,height:8,borderRadius:2,background:fs?.color||"#252D3D"}}/>
-                        <select value={f.from} onChange={e=>handleUpdateForbidden(activeLine,f.id,"from",e.target.value)} style={{background:"#0E1118",border:"1px solid #1A1F2E",color:"#D8DCE8",padding:"4px 7px",borderRadius:4,fontSize:11,outline:"none",minWidth:140,fontFamily:"'DM Mono',monospace"}}>{line.skus.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select>
+                        <span style={{display:"inline-block",width:8,height:8,borderRadius:2,background:fs?.color||"var(--border-2)"}}/>
+                        <select value={f.from} onChange={e=>handleUpdateForbidden(activeLine,f.id,"from",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontSize:11,outline:"none",minWidth:140,fontFamily:"'DM Mono',monospace"}}>{line.skus.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select>
                       </div>
                     </td>
                     <td style={{padding:"7px 10px"}}>
                       <div style={{display:"flex",alignItems:"center",gap:6}}>
-                        <span style={{display:"inline-block",width:8,height:8,borderRadius:2,background:ts?.color||"#252D3D"}}/>
-                        <select value={f.to} onChange={e=>handleUpdateForbidden(activeLine,f.id,"to",e.target.value)} style={{background:"#0E1118",border:"1px solid #1A1F2E",color:"#D8DCE8",padding:"4px 7px",borderRadius:4,fontSize:11,outline:"none",minWidth:140,fontFamily:"'DM Mono',monospace"}}>{line.skus.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select>
+                        <span style={{display:"inline-block",width:8,height:8,borderRadius:2,background:ts?.color||"var(--border-2)"}}/>
+                        <select value={f.to} onChange={e=>handleUpdateForbidden(activeLine,f.id,"to",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontSize:11,outline:"none",minWidth:140,fontFamily:"'DM Mono',monospace"}}>{line.skus.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select>
                       </div>
                     </td>
-                    <td style={{padding:"7px 10px"}}><input value={f.reason} onChange={e=>handleUpdateForbidden(activeLine,f.id,"reason",e.target.value)} style={{background:"#0E1118",border:"1px solid #1A1F2E",color:"#D8DCE8",padding:"4px 7px",borderRadius:4,fontSize:11,outline:"none",width:"100%",minWidth:240}}/></td>
+                    <td style={{padding:"7px 10px"}}><input value={f.reason} onChange={e=>handleUpdateForbidden(activeLine,f.id,"reason",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontSize:11,outline:"none",width:"100%",minWidth:240}}/></td>
                     <td style={{padding:"7px 6px"}}><button onClick={()=>handleRemoveForbidden(activeLine,f.id)} title="Eliminar" style={{width:22,height:22,borderRadius:4,background:"rgba(248,113,113,.08)",border:"1px solid rgba(248,113,113,.2)",color:"#F87171",cursor:"pointer",fontSize:13,lineHeight:1}}>×</button></td>
                   </tr>);
                 })}</tbody>
@@ -1106,28 +1417,28 @@ Responde en español.`;
 
         {activeConfigTab==="setup"&&(
           <div>
-            <div style={{fontSize:12,color:"#6B7A9A",background:"#0E1118",borderRadius:7,padding:"10px 14px",marginBottom:12,lineHeight:1.6}}>Minutos de setup al cambiar de SKU. Edita cualquier celda; 0 ó vacío = sin setup. <span style={{color:"#34D399"}}>Verde</span> &lt;30min, <span style={{color:"#FBBF24"}}>Amarillo</span> 30-60min, <span style={{color:"#F87171"}}>Rojo</span> &gt;60min.</div>
-            {line.skus.length<2 ? <div style={{textAlign:"center",padding:"30px",color:"#6B7A9A",fontSize:13,background:"#0E1118",borderRadius:8,border:"1px dashed #1A1F2E"}}>Necesitas al menos 2 SKUs para usar matriz de setup.</div> : (
+            <div style={{fontSize:12,color:"var(--text-dim)",background:"var(--surface)",borderRadius:7,padding:"10px 14px",marginBottom:12,lineHeight:1.6}}>Minutos de setup al cambiar de SKU. Edita cualquier celda; 0 ó vacío = sin setup. <span style={{color:"#34D399"}}>Verde</span> &lt;30min, <span style={{color:"#FBBF24"}}>Amarillo</span> 30-60min, <span style={{color:"#F87171"}}>Rojo</span> &gt;60min.</div>
+            {line.skus.length<2 ? <div style={{textAlign:"center",padding:"30px",color:"var(--text-dim)",fontSize:13,background:"var(--surface)",borderRadius:8,border:"1px dashed var(--border)"}}>Necesitas al menos 2 SKUs para usar matriz de setup.</div> : (
             <div style={{overflowX:"auto"}}>
               <table style={{borderCollapse:"collapse",fontSize:11}}>
                 <thead><tr>
-                  <th style={{padding:"7px 12px",borderBottom:"1px solid #1A1F2E",fontSize:10,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textAlign:"left",minWidth:80}}>Desde ↓ / Hacia →</th>
-                  {line.skus.map(s=><th key={s.id} style={{padding:"7px 12px",borderBottom:"1px solid #1A1F2E",fontSize:10,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textAlign:"center",minWidth:80,whiteSpace:"nowrap"}}><span style={{display:"inline-block",width:7,height:7,borderRadius:1,background:s.color,marginRight:4,verticalAlign:"middle"}}/>{s.id}</th>)}
+                  <th style={{padding:"7px 12px",borderBottom:"1px solid var(--border)",fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textAlign:"left",minWidth:80}}>Desde ↓ / Hacia →</th>
+                  {line.skus.map(s=><th key={s.id} style={{padding:"7px 12px",borderBottom:"1px solid var(--border)",fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textAlign:"center",minWidth:80,whiteSpace:"nowrap"}}><span style={{display:"inline-block",width:7,height:7,borderRadius:1,background:s.color,marginRight:4,verticalAlign:"middle"}}/>{s.id}</th>)}
                 </tr></thead>
                 <tbody>{line.skus.map(from=>(
-                  <tr key={from.id} style={{borderBottom:"1px solid #0E1118"}}>
+                  <tr key={from.id} style={{borderBottom:"1px solid var(--surface)"}}>
                     <td style={{padding:"6px 12px",fontFamily:"'DM Mono',monospace",fontSize:11,whiteSpace:"nowrap"}}><span style={{display:"inline-block",width:7,height:7,borderRadius:1,background:from.color,marginRight:5,verticalAlign:"middle"}}/>{from.id}</td>
                     {line.skus.map(to=>{
-                      if(from.id===to.id) return <td key={to.id} style={{padding:"6px 12px",textAlign:"center",color:"#252D3D",fontFamily:"'DM Mono',monospace"}}>—</td>;
+                      if(from.id===to.id) return <td key={to.id} style={{padding:"6px 12px",textAlign:"center",color:"var(--border-2)",fontFamily:"'DM Mono',monospace"}}>—</td>;
                       const m=line.setupMatrix?.[`${from.id}|${to.id}`]||0;
-                      const c=m===0?"#6B7A9A":m<30?"#34D399":m<60?"#FBBF24":"#F87171";
+                      const c=m===0?"var(--text-dim)":m<30?"#34D399":m<60?"#FBBF24":"#F87171";
                       return <td key={to.id} style={{padding:"4px 8px",textAlign:"center"}}>
                         <input type="number" min="0" value={m||""} placeholder="0"
                           onChange={e=>handleUpdateSetup(activeLine,from.id,to.id,e.target.value)}
-                          onFocus={e=>e.target.style.background="#0E1118"}
+                          onFocus={e=>e.target.style.background="var(--surface)"}
                           onBlur={e=>e.target.style.background="transparent"}
                           style={{width:46,background:"transparent",border:"1px solid transparent",color:c,fontFamily:"'DM Mono',monospace",fontSize:11,textAlign:"center",outline:"none",padding:"2px 4px",borderRadius:3,fontWeight:m>0?600:400,transition:"background .15s"}}
-                          onMouseEnter={e=>{if(document.activeElement!==e.target)e.target.style.borderColor="#1A2130";}}
+                          onMouseEnter={e=>{if(document.activeElement!==e.target)e.target.style.borderColor="var(--border-alt)";}}
                           onMouseLeave={e=>{if(document.activeElement!==e.target)e.target.style.borderColor="transparent";}}
                         />
                       </td>;
@@ -1145,28 +1456,28 @@ Responde en español.`;
           <div>
             {/* Working Days */}
             <div style={{marginBottom:22}}>
-              <div style={{fontSize:11,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",marginBottom:10}}>Días hábiles de producción</div>
+              <div style={{fontSize:11,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",marginBottom:10}}>Días hábiles de producción</div>
               <div style={{display:"flex",gap:6}}>
                 {[1,2,3,4,5,6,0].map(day=>{
                   const isActive=(line.workingDays||[]).includes(day);
                   return (
                     <button key={day} onClick={()=>handleWorkingDayToggle(activeLine,day)} style={{width:44,height:44,borderRadius:8,fontSize:11,fontFamily:"'DM Mono',monospace",fontWeight:600,cursor:"pointer",
-                      background:isActive?line.color+"CC":"#141820",color:isActive?"#fff":"#6B7A9A",
-                      border:isActive?`1px solid ${line.color}`:"1px solid #252D3D",transition:"all .2s"}}>
+                      background:isActive?line.color+"CC":"var(--surface-2)",color:isActive?"#fff":"var(--text-dim)",
+                      border:isActive?`1px solid ${line.color}`:"1px solid var(--border-2)",transition:"all .2s"}}>
                       {DAY_NAMES[day]}
                     </button>
                   );
                 })}
               </div>
-              <div style={{fontSize:10,color:"#6B7A9A",marginTop:7,fontFamily:"'DM Mono',monospace"}}>
+              <div style={{fontSize:10,color:"var(--text-dim)",marginTop:7,fontFamily:"'DM Mono',monospace"}}>
                 {(line.workingDays||[]).length} días/semana · {shiftHrsDay.toFixed(1)} h/día activas · {((line.workingDays||[]).length*shiftHrsDay).toFixed(0)} h/semana
               </div>
             </div>
 
             {/* 24h Timeline visualization */}
             <div style={{marginBottom:22}}>
-              <div style={{fontSize:11,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",marginBottom:8}}>Vista 24 horas</div>
-              <div style={{position:"relative",height:38,background:"#141820",borderRadius:7,border:"1px solid #1A1F2E",overflow:"hidden",marginBottom:16}}>
+              <div style={{fontSize:11,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",marginBottom:8}}>Vista 24 horas</div>
+              <div style={{position:"relative",height:38,background:"var(--surface-2)",borderRadius:7,border:"1px solid var(--border)",overflow:"hidden",marginBottom:16}}>
                 {/* background grid lines */}
                 {[0,3,6,9,12,15,18,21].map(h=>(
                   <div key={h} style={{position:"absolute",top:0,bottom:0,left:`${(h/24)*100}%`,borderLeft:"1px solid rgba(255,255,255,.05)",pointerEvents:"none"}}/>
@@ -1182,7 +1493,7 @@ Responde en español.`;
                   const isActive=shift.active!==false;
                   return segs.map((seg,i)=>(
                     <div key={`${shift.id}-${i}`} style={{position:"absolute",top:4,bottom:4,left:`${seg.l}%`,width:`${Math.max(seg.w,.5)}%`,
-                      background:isActive?line.color+"99":"#252D3D",borderRadius:3,overflow:"hidden",
+                      background:isActive?line.color+"99":"var(--border-2)",borderRadius:3,overflow:"hidden",
                       display:"flex",alignItems:"center",justifyContent:"center"}}>
                       {i===0&&seg.w>4&&<span style={{fontSize:9,color:"rgba(255,255,255,.7)",fontFamily:"'DM Mono',monospace",whiteSpace:"nowrap",paddingLeft:4,overflow:"hidden"}}>{shift.name}</span>}
                     </div>
@@ -1192,7 +1503,7 @@ Responde en español.`;
               {/* hour labels */}
               <div style={{position:"relative",height:14}}>
                 {[0,6,12,18,24].map(h=>(
-                  <span key={h} style={{position:"absolute",left:`${(h/24)*100}%`,transform:"translateX(-50%)",fontSize:9,color:"#6B7A9A",fontFamily:"'DM Mono',monospace"}}>{h===24?"0:00":`${h}:00`}</span>
+                  <span key={h} style={{position:"absolute",left:`${(h/24)*100}%`,transform:"translateX(-50%)",fontSize:9,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace"}}>{h===24?"0:00":`${h}:00`}</span>
                 ))}
               </div>
             </div>
@@ -1200,21 +1511,21 @@ Responde en español.`;
             {/* Shift list */}
             <div>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-                <div style={{fontSize:11,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em"}}>Turnos ({(line.shifts||[]).length})</div>
+                <div style={{fontSize:11,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em"}}>Turnos ({(line.shifts||[]).length})</div>
                 <button onClick={()=>handleAddShift(activeLine)} style={{fontSize:10,padding:"4px 10px",borderRadius:5,background:"rgba(245,158,11,.1)",border:"1px solid rgba(245,158,11,.3)",color:"#F59E0B",cursor:"pointer"}}>+ Agregar turno</button>
               </div>
               <div style={{display:"flex",flexDirection:"column",gap:8}}>
                 {(line.shifts||[]).map(shift=>(
-                  <div key={shift.id} style={{padding:"10px 12px",background:"#141820",borderRadius:7,border:`1px solid ${shift.active!==false?"#252D3D":"#1A2130"}`,opacity:shift.active!==false?1:.65}}>
+                  <div key={shift.id} style={{padding:"10px 12px",background:"var(--surface-2)",borderRadius:7,border:`1px solid ${shift.active!==false?"var(--border-2)":"var(--border-alt)"}`,opacity:shift.active!==false?1:.65}}>
                     <div style={{display:"grid",gridTemplateColumns:"1fr auto auto auto 26px",gap:8,alignItems:"center"}}>
-                      <input value={shift.name} onChange={e=>handleShiftUpdate(activeLine,shift.id,"name",e.target.value)} style={{background:"#0E1118",border:"1px solid #252D3D",color:"#D8DCE8",padding:"5px 9px",borderRadius:5,fontSize:12,outline:"none"}}/>
+                      <input value={shift.name} onChange={e=>handleShiftUpdate(activeLine,shift.id,"name",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border-2)",color:"var(--text)",padding:"5px 9px",borderRadius:5,fontSize:12,outline:"none"}}/>
                       <div style={{display:"flex",alignItems:"center",gap:5}}>
-                        <span style={{fontSize:10,color:"#6B7A9A",fontFamily:"'DM Mono',monospace"}}>Inicio</span>
-                        <input type="time" value={shift.start} onChange={e=>handleShiftUpdate(activeLine,shift.id,"start",e.target.value)} style={{background:"#0E1118",border:"1px solid #252D3D",color:"#D8DCE8",padding:"4px 6px",borderRadius:5,fontSize:11,outline:"none",fontFamily:"'DM Mono',monospace",width:78,colorScheme:"dark"}}/>
+                        <span style={{fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace"}}>Inicio</span>
+                        <input type="time" value={shift.start} onChange={e=>handleShiftUpdate(activeLine,shift.id,"start",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border-2)",color:"var(--text)",padding:"4px 6px",borderRadius:5,fontSize:11,outline:"none",fontFamily:"'DM Mono',monospace",width:78,colorScheme:"dark"}}/>
                       </div>
                       <div style={{display:"flex",alignItems:"center",gap:5}}>
-                        <span style={{fontSize:10,color:"#6B7A9A",fontFamily:"'DM Mono',monospace"}}>Fin</span>
-                        <input type="time" value={shift.end} onChange={e=>handleShiftUpdate(activeLine,shift.id,"end",e.target.value)} style={{background:"#0E1118",border:"1px solid #252D3D",color:"#D8DCE8",padding:"4px 6px",borderRadius:5,fontSize:11,outline:"none",fontFamily:"'DM Mono',monospace",width:78,colorScheme:"dark"}}/>
+                        <span style={{fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace"}}>Fin</span>
+                        <input type="time" value={shift.end} onChange={e=>handleShiftUpdate(activeLine,shift.id,"end",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border-2)",color:"var(--text)",padding:"4px 6px",borderRadius:5,fontSize:11,outline:"none",fontFamily:"'DM Mono',monospace",width:78,colorScheme:"dark"}}/>
                       </div>
                       <button onClick={()=>handleShiftUpdate(activeLine,shift.id,"active",shift.active===false)} style={{padding:"4px 10px",borderRadius:5,cursor:"pointer",fontSize:10,fontFamily:"'DM Mono',monospace",
                         background:shift.active!==false?"rgba(52,211,153,.1)":"rgba(248,113,113,.08)",
@@ -1224,7 +1535,7 @@ Responde en español.`;
                       </button>
                       <button onClick={()=>handleRemoveShift(activeLine,shift.id)} style={{width:26,height:26,borderRadius:5,background:"rgba(248,113,113,.08)",border:"1px solid rgba(248,113,113,.2)",color:"#F87171",cursor:"pointer",fontSize:15,lineHeight:1,display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
                     </div>
-                    <div style={{marginTop:6,fontSize:10,color:"#6B7A9A",fontFamily:"'DM Mono',monospace"}}>
+                    <div style={{marginTop:6,fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace"}}>
                       {shift.start} → {shift.end}
                       {(() => { const [sh,sm]=shift.start.split(":").map(Number),[eh,em]=shift.end.split(":").map(Number); let h=(eh+em/60)-(sh+sm/60); if(h<0)h+=24; return ` · ${h.toFixed(1)}h`; })()}
                       {shift.end < shift.start && <span style={{color:"#FBBF24",marginLeft:6}}>↪ turno nocturno</span>}
@@ -1248,30 +1559,30 @@ Responde en español.`;
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500&display=swap');
         *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
-        body,html{background:#0B0D12;color:#D8DCE8;font-family:'DM Sans',sans-serif;}
-        .app{display:flex;flex-direction:column;height:100vh;overflow:hidden;background:#0B0D12;}
-        .topbar{display:flex;align-items:center;justify-content:space-between;padding:0 24px;height:54px;background:#0E1118;border-bottom:1px solid #1A1F2E;flex-shrink:0;gap:16px;}
+        body,html{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;}
+        .app{display:flex;flex-direction:column;height:100vh;overflow:hidden;background:var(--bg);}
+        .topbar{display:flex;align-items:center;justify-content:space-between;padding:0 24px;height:54px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0;gap:16px;}
         .brand{display:flex;align-items:center;gap:10px;}
         .brand-mark{width:30px;height:30px;background:linear-gradient(135deg,#F59E0B,#EF4444);border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:'Syne',sans-serif;font-weight:800;font-size:12px;color:#fff;}
         .brand-name{font-family:'Syne',sans-serif;font-weight:700;font-size:14px;letter-spacing:-.02em;}
-        .kpi-strip{display:grid;grid-template-columns:repeat(5,1fr);border-bottom:1px solid #1A1F2E;flex-shrink:0;}
-        .kpi{padding:10px 16px;border-right:1px solid #1A1F2E;}
+        .kpi-strip{display:grid;grid-template-columns:repeat(5,1fr);border-bottom:1px solid var(--border);flex-shrink:0;}
+        .kpi{padding:10px 16px;border-right:1px solid var(--border);}
         .kpi:last-child{border-right:none;}
         .body{display:grid;grid-template-columns:1fr 310px;flex:1;overflow:hidden;}
-        .left{display:flex;flex-direction:column;border-right:1px solid #1A1F2E;overflow:hidden;}
-        .tabs{display:flex;padding:0 18px;border-bottom:1px solid #1A1F2E;flex-shrink:0;}
-        .tab-btn{padding:8px 13px;font-size:11px;font-family:'DM Mono',monospace;color:#6B7A9A;background:none;border:none;border-bottom:2px solid transparent;cursor:pointer;transition:all .2s;}
+        .left{display:flex;flex-direction:column;border-right:1px solid var(--border);overflow:hidden;}
+        .tabs{display:flex;padding:0 18px;border-bottom:1px solid var(--border);flex-shrink:0;}
+        .tab-btn{padding:8px 13px;font-size:11px;font-family:'DM Mono',monospace;color:var(--text-dim);background:none;border:none;border-bottom:2px solid transparent;cursor:pointer;transition:all .2s;}
         .tab-btn.active{color:#F59E0B;border-bottom-color:#F59E0B;}
         .panel{flex:1;overflow-y:auto;padding:16px 18px;}
         .panel::-webkit-scrollbar{width:3px;}
-        .panel::-webkit-scrollbar-thumb{background:#252D3D;}
-        .ai-panel{display:flex;flex-direction:column;background:#0E1118;overflow:hidden;}
+        .panel::-webkit-scrollbar-thumb{background:var(--border-2);}
+        .ai-panel{display:flex;flex-direction:column;background:var(--surface);overflow:hidden;}
         .ai-msgs{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:9px;}
         .ai-msgs::-webkit-scrollbar{width:3px;}
-        .ai-msgs::-webkit-scrollbar-thumb{background:#252D3D;}
+        .ai-msgs::-webkit-scrollbar-thumb{background:var(--border-2);}
         .bubble{padding:9px 12px;border-radius:9px;font-size:12px;line-height:1.65;white-space:pre-wrap;}
         .user-bubble{background:rgba(245,158,11,.1);color:#FCD34D;border:1px solid rgba(245,158,11,.2);border-bottom-right-radius:2px;align-self:flex-end;max-width:92%;}
-        .ai-bubble{background:#141820;color:#C0C8D8;border:1px solid #1A1F2E;border-bottom-left-radius:2px;align-self:flex-start;max-width:92%;}
+        .ai-bubble{background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-bottom-left-radius:2px;align-self:flex-start;max-width:92%;}
         .loading span{animation:blink 1.2s infinite;display:inline-block;}
         .loading span:nth-child(2){animation-delay:.15s;}
         .loading span:nth-child(3){animation-delay:.3s;}
@@ -1287,7 +1598,7 @@ Responde en español.`;
           </div>
           <div style={{display:"flex",gap:4}}>
             {data.lines.map(l=>(
-              <button key={l.id} onClick={()=>setActiveLine(l.id)} style={{padding:"5px 14px",borderRadius:20,fontSize:12,fontWeight:500,cursor:"pointer",border:"1px solid transparent",transition:"all .2s",background:activeLine===l.id?l.color:"transparent",color:activeLine===l.id?"#fff":"#6B7A9A"}}>
+              <button key={l.id} onClick={()=>setActiveLine(l.id)} style={{padding:"5px 14px",borderRadius:20,fontSize:12,fontWeight:500,cursor:"pointer",border:"1px solid transparent",transition:"all .2s",background:activeLine===l.id?l.color:"transparent",color:activeLine===l.id?"#fff":"var(--text-dim)"}}>
                 {l.name}
               </button>
             ))}
@@ -1307,15 +1618,17 @@ Responde en español.`;
                 })()}
               </span>
             )}
-            <button onClick={handleExportData} title="Descargar respaldo JSON" style={{padding:"5px 10px",borderRadius:5,background:"transparent",border:"1px solid #1A2130",color:"#A0AABB",cursor:"pointer",fontSize:11,fontFamily:"'DM Mono',monospace"}}>↓ Exportar</button>
-            <label title="Cargar respaldo JSON" style={{padding:"5px 10px",borderRadius:5,background:"transparent",border:"1px solid #1A2130",color:"#A0AABB",cursor:"pointer",fontSize:11,fontFamily:"'DM Mono',monospace"}}>
+            <button onClick={handleExportData} title="Descargar respaldo JSON" style={{padding:"5px 10px",borderRadius:5,background:"transparent",border:"1px solid var(--border-alt)",color:"var(--text-muted)",cursor:"pointer",fontSize:11,fontFamily:"'DM Mono',monospace"}}>↓ Exportar</button>
+            <label title="Cargar respaldo JSON" style={{padding:"5px 10px",borderRadius:5,background:"transparent",border:"1px solid var(--border-alt)",color:"var(--text-muted)",cursor:"pointer",fontSize:11,fontFamily:"'DM Mono',monospace"}}>
               ↑ Importar
               <input type="file" accept=".json,application/json" onChange={handleImportData} style={{display:"none"}}/>
             </label>
+            <button onClick={()=>setShowApiKeyModal(true)} title={apiKey?"API key configurada (click para cambiar)":"Configurar API key para el asistente IA"} style={{padding:"5px 10px",borderRadius:5,background:apiKey?"rgba(52,211,153,.08)":"transparent",border:"1px solid "+(apiKey?"rgba(52,211,153,.3)":"var(--border-alt)"),color:apiKey?"#34D399":"var(--text-muted)",cursor:"pointer",fontSize:13,fontFamily:"'DM Mono',monospace",width:32,lineHeight:1}}>🔑</button>
+            <button onClick={toggleTheme} title={themeMode==="dark"?"Cambiar a modo claro":"Cambiar a modo oscuro"} style={{padding:"5px 10px",borderRadius:5,background:"transparent",border:"1px solid var(--border-alt)",color:"var(--text-muted)",cursor:"pointer",fontSize:13,fontFamily:"'DM Mono',monospace",width:32,lineHeight:1}}>{themeMode==="dark"?"☀":"☾"}</button>
             <button onClick={()=>setShowResetConfirm(true)} title="Restaurar datos de ejemplo" style={{padding:"5px 10px",borderRadius:5,background:"transparent",border:"1px solid rgba(248,113,113,.2)",color:"#F87171",cursor:"pointer",fontSize:11,fontFamily:"'DM Mono',monospace"}}>↺ Reset</button>
-            <span style={{width:1,height:18,background:"#1A2130"}}/>
-            <span style={{fontSize:11,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".06em"}}>Heurística</span>
-            <select value={heuristic} onChange={e=>{setHeuristic(e.target.value);setCustomOrder(p=>({...p,[activeLine]:null}));}} style={{background:"#141820",border:"1px solid #252D3D",color:"#D8DCE8",padding:"5px 10px",borderRadius:6,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",cursor:"pointer"}}>
+            <span style={{width:1,height:18,background:"var(--border-alt)"}}/>
+            <span style={{fontSize:11,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".06em"}}>Heurística</span>
+            <select value={heuristic} onChange={e=>{setHeuristic(e.target.value);setCustomOrder(p=>({...p,[activeLine]:null}));}} style={{background:"var(--surface-2)",border:"1px solid var(--border-2)",color:"var(--text)",padding:"5px 10px",borderRadius:6,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",cursor:"pointer"}}>
               <option value="EDD">EDD – Earliest Due Date</option>
               <option value="SPT">SPT – Shortest Processing Time</option>
               <option value="WSPT">WSPT – Weighted SPT</option>
@@ -1327,17 +1640,59 @@ Responde en español.`;
 
         {showResetConfirm && (
           <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.7)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}} onClick={()=>setShowResetConfirm(false)}>
-            <div onClick={e=>e.stopPropagation()} style={{background:"#141820",border:"1px solid #252D3D",borderRadius:10,padding:24,maxWidth:420,boxShadow:"0 20px 60px rgba(0,0,0,.5)"}}>
+            <div onClick={e=>e.stopPropagation()} style={{background:"var(--surface-2)",border:"1px solid var(--border-2)",borderRadius:10,padding:24,maxWidth:420,boxShadow:"0 20px 60px rgba(0,0,0,.5)"}}>
               <div style={{fontSize:16,fontWeight:600,marginBottom:10,color:"#F87171"}}>¿Borrar todos los datos?</div>
-              <div style={{fontSize:13,color:"#A0AABB",lineHeight:1.5,marginBottom:18}}>
+              <div style={{fontSize:13,color:"var(--text-muted)",lineHeight:1.5,marginBottom:18}}>
                 Se eliminarán todas las órdenes, máquinas, SKUs y configuraciones personalizadas. Se restaurarán los datos de ejemplo iniciales. Esta acción no se puede deshacer (te recomendamos <strong style={{color:"#34D399"}}>↓ Exportar</strong> primero).
               </div>
               <div style={{display:"flex",gap:10,justifyContent:"flex-end"}}>
-                <button onClick={()=>setShowResetConfirm(false)} style={{padding:"7px 16px",borderRadius:5,background:"transparent",border:"1px solid #252D3D",color:"#A0AABB",cursor:"pointer",fontSize:12,fontFamily:"'DM Mono',monospace"}}>Cancelar</button>
+                <button onClick={()=>setShowResetConfirm(false)} style={{padding:"7px 16px",borderRadius:5,background:"transparent",border:"1px solid var(--border-2)",color:"var(--text-muted)",cursor:"pointer",fontSize:12,fontFamily:"'DM Mono',monospace"}}>Cancelar</button>
                 <button onClick={handleResetData} style={{padding:"7px 16px",borderRadius:5,background:"rgba(248,113,113,.15)",border:"1px solid rgba(248,113,113,.3)",color:"#F87171",cursor:"pointer",fontSize:12,fontFamily:"'DM Mono',monospace"}}>Sí, borrar todo</button>
               </div>
             </div>
           </div>
+        )}
+
+        {showHorizonModal && (
+          <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.7)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}} onClick={()=>setShowHorizonModal(false)}>
+            <div onClick={e=>e.stopPropagation()} style={{background:"var(--surface-2)",border:"1px solid var(--border-2)",borderRadius:10,padding:24,maxWidth:480,width:"90%",boxShadow:"0 20px 60px rgba(0,0,0,.5)"}}>
+              <div style={{fontSize:16,fontWeight:600,marginBottom:6,color:"#F59E0B"}}>📅 Horizonte de facturación</div>
+              <div style={{fontSize:12,color:"var(--text-muted)",lineHeight:1.5,marginBottom:18}}>
+                Generará una meta diaria para cada día hábil entre las dos fechas en <strong style={{color:"#34D399"}}>{line?.name}</strong>. Días no laborables según la configuración de turnos se omiten automáticamente.
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:14}}>
+                <div>
+                  <div style={{fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",marginBottom:4}}>Fecha inicial</div>
+                  <input type="date" value={horizonStart} onChange={e=>setHorizonStart(e.target.value)} style={{width:"100%",background:"var(--surface)",border:"1px solid var(--border-2)",color:"var(--text)",padding:"7px 10px",borderRadius:5,fontFamily:"'DM Mono',monospace",fontSize:12,outline:"none",colorScheme:themeMode==="dark"?"dark":"light"}}/>
+                </div>
+                <div>
+                  <div style={{fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",marginBottom:4}}>Fecha final</div>
+                  <input type="date" value={horizonEnd} onChange={e=>setHorizonEnd(e.target.value)} style={{width:"100%",background:"var(--surface)",border:"1px solid var(--border-2)",color:"var(--text)",padding:"7px 10px",borderRadius:5,fontFamily:"'DM Mono',monospace",fontSize:12,outline:"none",colorScheme:themeMode==="dark"?"dark":"light"}}/>
+                </div>
+              </div>
+              <div style={{marginBottom:14}}>
+                <div style={{fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",marginBottom:4}}>Meta por día (COP)</div>
+                <div style={{display:"flex",alignItems:"center",gap:6}}>
+                  <span style={{color:"#34D399",fontFamily:"'DM Mono',monospace",fontSize:14}}>$</span>
+                  <input type="number" min="0" value={horizonDefault} onChange={e=>setHorizonDefault(Math.max(0,parseFloat(e.target.value)||0))} style={{flex:1,background:"var(--surface)",border:"1px solid var(--border-2)",color:"#34D399",padding:"7px 10px",borderRadius:5,fontFamily:"'DM Mono',monospace",fontSize:13,outline:"none"}}/>
+                  <span style={{fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace"}}>COP / día</span>
+                </div>
+                <div style={{fontSize:10,color:"var(--text-dim)",marginTop:4}}>Ejemplo: ${horizonDefault.toLocaleString("es-CO")}</div>
+              </div>
+              <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,color:"var(--text-muted)",cursor:"pointer",marginBottom:18}}>
+                <input type="checkbox" checked={horizonReplace} onChange={e=>setHorizonReplace(e.target.checked)} style={{accentColor:"#F59E0B"}}/>
+                Reemplazar metas existentes (si no marcas, solo se llenan días vacíos)
+              </label>
+              <div style={{display:"flex",gap:10,justifyContent:"flex-end"}}>
+                <button onClick={()=>setShowHorizonModal(false)} style={{padding:"7px 16px",borderRadius:5,background:"transparent",border:"1px solid var(--border-2)",color:"var(--text-muted)",cursor:"pointer",fontSize:12,fontFamily:"'DM Mono',monospace"}}>Cancelar</button>
+                <button onClick={handleApplyHorizon} style={{padding:"7px 16px",borderRadius:5,background:"rgba(245,158,11,.15)",border:"1px solid rgba(245,158,11,.3)",color:"#F59E0B",cursor:"pointer",fontSize:12,fontFamily:"'DM Mono',monospace"}}>Generar metas</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {showApiKeyModal && (
+          <ApiKeyModal currentKey={apiKey} onSave={handleSaveApiKey} onClose={()=>setShowApiKeyModal(false)} themeMode={themeMode}/>
         )}
 
         <div className="kpi-strip">
@@ -1347,19 +1702,19 @@ Responde en español.`;
             { lbl:"Órdenes tardías",   val:schedule.kpis.lateOrders||0,     sub:`en ${line?.name}`,                              c:(schedule.kpis.lateOrders||0)>0?"#F87171":"#34D399" },
             { lbl:"Setup total",       val:`${schedule.kpis.totalSetup||0} min`, sub:"cambios de SKU",                          c:(schedule.kpis.totalSetup||0)>120?"#FBBF24":"#34D399" },
             {
-              lbl: todayGoal>0 ? "Meta Hoy" : "Meta Facturación",
+              lbl: todayGoal>0 ? "Meta Hoy (COP)" : "Meta Facturación (COP)",
               val: todayGoal>0 ? `${todayPct.toFixed(0)}%` : `${billingPct.toFixed(0)}%`,
-              sub: todayGoal>0 ? `$${(todayProj/1000).toFixed(0)}K / $${(todayGoal/1000).toFixed(0)}K hoy` : `$${totalValue.toLocaleString()} / $${data.billingGoal.toLocaleString()}`,
+              sub: todayGoal>0 ? `$${(todayProj/1000).toFixed(0)}K / $${(todayGoal/1000).toFixed(0)}K hoy` : `$${totalValue.toLocaleString("es-CO")} / $${data.billingGoal.toLocaleString("es-CO")}`,
               c: todayGoal>0?todayColor:billingPct>=100?"#34D399":billingPct>=70?"#FBBF24":"#F87171",
               bar: true,
               pct: todayGoal>0?todayPct:billingPct,
             },
           ].map(k=>(
             <div key={k.lbl} className="kpi">
-              <div style={{fontSize:10,color:"#6B7A9A",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em"}}>{k.lbl}</div>
+              <div style={{fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em"}}>{k.lbl}</div>
               <div style={{fontSize:19,fontWeight:700,fontFamily:"'Syne',sans-serif",marginTop:3,color:k.c,lineHeight:1}}>{k.val}</div>
-              {k.bar&&<div style={{height:2,background:"#1A1F2E",marginTop:5,borderRadius:1,overflow:"hidden"}}><div style={{height:"100%",width:`${k.pct}%`,background:k.c,transition:"width .8s"}}/></div>}
-              <div style={{fontSize:10,color:"#6B7A9A",marginTop:3}}>{k.sub}</div>
+              {k.bar&&<div style={{height:2,background:"var(--border)",marginTop:5,borderRadius:1,overflow:"hidden"}}><div style={{height:"100%",width:`${k.pct}%`,background:k.c,transition:"width .8s"}}/></div>}
+              <div style={{fontSize:10,color:"var(--text-dim)",marginTop:3}}>{k.sub}</div>
             </div>
           ))}
         </div>
@@ -1380,9 +1735,9 @@ Responde en español.`;
           </div>
 
           <div className="ai-panel">
-            <div style={{padding:"12px 16px",borderBottom:"1px solid #1A1F2E",flexShrink:0}}>
+            <div style={{padding:"12px 16px",borderBottom:"1px solid var(--border)",flexShrink:0}}>
               <div style={{fontSize:13,fontWeight:600,fontFamily:"'Syne',sans-serif",display:"flex",alignItems:"center",gap:8}}><div className="ai-pulse"/>Asistente IA</div>
-              <div style={{fontSize:10,color:"#6B7A9A",marginTop:2,fontFamily:"'DM Mono',monospace"}}>turnos · metas · reglas · SKUs · secuencias</div>
+              <div style={{fontSize:10,color:"var(--text-dim)",marginTop:2,fontFamily:"'DM Mono',monospace"}}>turnos · metas · reglas · SKUs · secuencias</div>
             </div>
             <div className="ai-msgs">
               {aiMessages.map((m,i)=>(
@@ -1391,14 +1746,14 @@ Responde en español.`;
               {isAiLoading&&<div className="bubble ai-bubble loading"><span>●</span><span>●</span><span>●</span></div>}
               <div ref={chatRef}/>
             </div>
-            <div style={{padding:"10px 12px",borderTop:"1px solid #1A1F2E",display:"flex",gap:8,flexShrink:0}}>
-              <textarea style={{flex:1,background:"#141820",border:"1px solid #252D3D",color:"#D8DCE8",padding:"8px 11px",borderRadius:7,fontSize:12,fontFamily:"'DM Sans',sans-serif",outline:"none",resize:"none",transition:"border-color .2s"}}
+            <div style={{padding:"10px 12px",borderTop:"1px solid var(--border)",display:"flex",gap:8,flexShrink:0}}>
+              <textarea style={{flex:1,background:"var(--surface-2)",border:"1px solid var(--border-2)",color:"var(--text)",padding:"8px 11px",borderRadius:7,fontSize:12,fontFamily:"'DM Sans',sans-serif",outline:"none",resize:"none",transition:"border-color .2s"}}
                 rows={2} placeholder="Instrucción o pregunta..." value={aiInput}
                 onChange={e=>setAiInput(e.target.value)}
                 onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendAI();}}}
                 onFocus={e=>e.target.style.borderColor="#F59E0B"}
-                onBlur={e=>e.target.style.borderColor="#252D3D"}/>
-              <button onClick={sendAI} disabled={isAiLoading||!aiInput.trim()} style={{background:"#F59E0B",border:"none",color:"#0B0D12",padding:"8px 12px",borderRadius:7,cursor:"pointer",fontSize:15,fontWeight:700,opacity:isAiLoading||!aiInput.trim()?0.35:1}}>↑</button>
+                onBlur={e=>e.target.style.borderColor="var(--border-2)"}/>
+              <button onClick={sendAI} disabled={isAiLoading||!aiInput.trim()} style={{background:"#F59E0B",border:"none",color:"var(--bg)",padding:"8px 12px",borderRadius:7,cursor:"pointer",fontSize:15,fontWeight:700,opacity:isAiLoading||!aiInput.trim()?0.35:1}}>↑</button>
             </div>
           </div>
         </div>
