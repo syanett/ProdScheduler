@@ -330,14 +330,41 @@ function buildSchedule(data, heuristic, lineId, customOrder) {
     const remaining = [...batches];
     const sequenced = [];
     let prev = null;
+
+    // Score function: for a given candidate, how good is it as the next pick?
+    // Lower score = better. We minimize:
+    //   1. Forbidden transition with prev (huge penalty)
+    //   2. Priority violation (huge penalty)
+    //   3. "Trap risk": picking this candidate would leave us with no way to
+    //      continue without forbidden transitions. We approximate this by
+    //      counting how many of the REMAINING SKUs after this pick would be
+    //      forbidden as successors of `chosen.skuId`.
+    const scoreCandidate = (candidate, idx, rem) => {
+      // Hard constraint violations come first as huge penalties (in priority order)
+      if (isForbidden(prev, candidate.skuId)) return 1e9;
+      const remAfter = rem.filter((_, k) => k !== idx);
+      if (wouldViolatePriority(candidate.skuId, remAfter)) return 1e8;
+      // Soft penalty: count distinct remaining SKUs that would be forbidden after this pick
+      const remSkus = new Set(remAfter.map(b => b.skuId));
+      let trapRisk = 0;
+      remSkus.forEach(rsku => { if (isForbidden(candidate.skuId, rsku)) trapRisk++; });
+      // If picking this candidate would block ALL remaining successors, that's catastrophic
+      if (remSkus.size > 0 && trapRisk === remSkus.size) trapRisk += 1e6;
+      return trapRisk;
+    };
+
     while (remaining.length) {
-      // First, try to pick a batch that satisfies BOTH constraints
-      let chosenIdx = remaining.findIndex(b => !isForbidden(prev, b.skuId) && !wouldViolatePriority(b.skuId, remaining.filter((_,k)=>k!==remaining.indexOf(b))));
-      // If none, relax priority but keep forbidden
-      if (chosenIdx < 0) chosenIdx = remaining.findIndex(b => !isForbidden(prev, b.skuId));
-      // If still none, take any (will record violation)
-      if (chosenIdx < 0) chosenIdx = 0;
-      const [chosen] = remaining.splice(chosenIdx, 1);
+      // Score all candidates (only the first occurrence of each SKU to save work)
+      let bestIdx = 0, bestScore = Infinity;
+      const seenSkus = new Set();
+      for (let i = 0; i < remaining.length; i++) {
+        const cand = remaining[i];
+        if (seenSkus.has(cand.skuId)) continue; // same-SKU candidates score equal
+        seenSkus.add(cand.skuId);
+        const s = scoreCandidate(cand, i, remaining);
+        if (s < bestScore) { bestScore = s; bestIdx = i; }
+      }
+      const [chosen] = remaining.splice(bestIdx, 1);
       sequenced.push(chosen);
       prev = chosen.skuId;
     }
