@@ -263,11 +263,26 @@ function buildSchedule(data, heuristic, lineId, customOrder, startTimeMs) {
       return (ai < 0 ? 9999 : ai) - (bi < 0 ? 9999 : bi);
     });
   } else {
-    const tot = b => Object.values(b.stageTimes).reduce((s,v)=>s+v,0);
+    const tot = b => Object.values(b.stageTimes).reduce((s,v)=>s+v,0) * b.qty; // total proc minutes
     if      (heuristic === "EDD")  batches.sort((a,b) => new Date(a.dueDate) - new Date(b.dueDate));
     else if (heuristic === "SPT")  batches.sort((a,b) => tot(a) - tot(b));
+    else if (heuristic === "LPT")  batches.sort((a,b) => tot(b) - tot(a));  // Longest Processing Time first
     else if (heuristic === "WSPT") batches.sort((a,b) => (b.priority/tot(b)) - (a.priority/tot(a)));
     else if (heuristic === "CR")   { const now = Date.now(); batches.sort((a,b) => ((new Date(a.dueDate)-now)/tot(a)) - ((new Date(b.dueDate)-now)/tot(b))); }
+    else if (heuristic === "MS")   {
+      // Modified Slack: lowest slack-per-operation first.
+      // slack = dueDate - now - remainingProcTime
+      // MS_score = slack / numRemainingOps  (numRemaining proxy = num stages with time > 0)
+      // Lower score (or more negative) = more urgent → goes first.
+      const now = Date.now();
+      const msScore = b => {
+        const remProc = tot(b) * 60000; // minutes to ms
+        const slack = new Date(b.dueDate).getTime() - now - remProc;
+        const numOps = Object.values(b.stageTimes).filter(v => v > 0).length || 1;
+        return slack / numOps;
+      };
+      batches.sort((a,b) => msScore(a) - msScore(b));
+    }
     // FIFO: no sort
 
     // --- BACKLOG PRIORITY BOOST ---
@@ -416,14 +431,38 @@ function buildSchedule(data, heuristic, lineId, customOrder, startTimeMs) {
       });
     });
     const finalEnd = ops.length ? ops[ops.length-1].endTime : new Date(nowMs);
-    const tard = Math.max(0, (finalEnd.getTime() - new Date(batch.dueDate).getTime()) / 60000);
-    return { ...batch, ops, startTime: ops[0]?.setupStart||new Date(nowMs), endTime: finalEnd, tardiness: tard, isLate: tard > 0 };
+    const dueMs = new Date(batch.dueDate).getTime();
+    const tard = Math.max(0, (finalEnd.getTime() - dueMs) / 60000);
+    // Slack: positive if there's room, negative if already late by the schedule
+    const slack = (dueMs - finalEnd.getTime()) / 60000; // minutes; negative = tardy
+    return { ...batch, ops, startTime: ops[0]?.setupStart||new Date(nowMs), endTime: finalEnd, tardiness: tard, slack, isLate: tard > 0 };
   });
 
   const makespan   = scheduled.length ? (Math.max(...scheduled.map(b=>b.endTime.getTime()))-t0)/60000 : 0;
   const totalSetup = scheduled.reduce((s,b) => s + b.ops.reduce((a,o) => a+o.setupTime, 0), 0);
   const lateOrders = [...new Set(scheduled.filter(b=>b.isLate).map(b=>b.orderId))].length;
-  return { batches: scheduled, violations, kpis: { makespan: Math.round(makespan), totalSetup: Math.round(totalSetup), lateOrders, totalBatches: scheduled.length } };
+  // OTIF-focused KPIs
+  const Tmax       = scheduled.length ? Math.max(...scheduled.map(b => b.tardiness)) : 0;
+  const sumT       = scheduled.reduce((s,b) => s + b.tardiness, 0);
+  const onTime     = scheduled.length ? scheduled.filter(b => !b.isLate).length : 0;
+  const onTimePct  = scheduled.length ? (onTime / scheduled.length) * 100 : 100;
+  // Slack distribution: critical = slack < 120 min (2h), risk = 0-120 min, safe > 120
+  const critical = scheduled.filter(b => b.slack < 0).length;
+  const risky    = scheduled.filter(b => b.slack >= 0 && b.slack < 120).length;
+  const safe     = scheduled.filter(b => b.slack >= 120).length;
+  // Minimum slack across all batches (most critical batch)
+  const minSlack = scheduled.length ? Math.min(...scheduled.map(b => b.slack)) : 0;
+  return { batches: scheduled, violations, kpis: {
+    makespan: Math.round(makespan),
+    totalSetup: Math.round(totalSetup),
+    lateOrders,
+    totalBatches: scheduled.length,
+    Tmax: Math.round(Tmax),
+    sumT: Math.round(sumT),
+    onTime, onTimePct: Math.round(onTimePct),
+    critical, risky, safe,
+    minSlack: Math.round(minSlack)
+  }};
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -694,6 +733,11 @@ function App() {
   const [lastSaved,      setLastSaved]      = useState(initialMeta.lastSaved || null);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [calendarViewMonth, setCalendarViewMonth] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
+  const [showAiPanel, setShowAiPanel] = useState(() => {
+    const v = localStorage.getItem("prodScheduler_v4_showAi");
+    return v === null ? true : v === "true";
+  });
+  useEffect(() => { localStorage.setItem("prodScheduler_v4_showAi", String(showAiPanel)); }, [showAiPanel]);
   const [themeMode, setThemeMode] = useState(() => {
     try { return localStorage.getItem("prodScheduler_v4_theme") || "dark"; }
     catch (e) { return "dark"; }
@@ -936,7 +980,7 @@ function App() {
 
 
   const [activeLine,     setActiveLine]     = useState("L1");
-  const [heuristic,      setHeuristic]      = useState("EDD");
+  const [heuristic,      setHeuristic]      = useState("MS");
   const [activeTab,      setActiveTab]      = useState("gantt");
   const [activeConfigTab,setActiveConfigTab]= useState("stages");
   const [customOrder,    setCustomOrder]    = useState({ L1: null, L2: null });
@@ -1535,11 +1579,22 @@ Responde en español.`;
                   const left=Math.max(0,((barL-now)/span)*100);
                   const totalW=Math.max(((barR-barL)/span)*100,1.5);
                   const setupPct=barR>barL?Math.max(0,((wkL-barL)/(barR-barL))*100):0;
+                  // Slack-based outline: rojo si late, naranja si crítico (<2h), nada si seguro
+                  const slackOutline = batch.isLate
+                    ? "2px solid #F87171"
+                    : batch.slack < 120
+                      ? "2px solid #F59E0B"
+                      : "none";
+                  const slackTip = batch.isLate
+                    ? `❌ ATRASO: ${Math.round(batch.tardiness)} min (-${Math.abs(batch.slack/60).toFixed(1)}h)`
+                    : batch.slack < 120
+                      ? `⚠ CRÍTICO: holgura ${(batch.slack/60).toFixed(1)}h (<2h)`
+                      : `✓ holgura ${(batch.slack/60).toFixed(1)}h`;
                   return (
                     <div key={batch.id} style={{position:"absolute",top:4,height:28,left:`${left}%`,width:`${totalW}%`,display:"flex",borderRadius:4,overflow:"hidden",cursor:"pointer"}}
-                      title={`${batch.skuName} · Lote ${batch.batchNum}/${batch.batchTotal}\nMáq: ${op.machineName}\nSetup: ${op.setupTime}min\n${op.startTime.toLocaleTimeString()} → ${op.endTime.toLocaleTimeString()}`}>
+                      title={`${batch.skuName} · Lote ${batch.batchNum}/${batch.batchTotal}\nMáq: ${op.machineName}\nSetup: ${op.setupTime}min\n${op.startTime.toLocaleTimeString()} → ${op.endTime.toLocaleTimeString()}\n${slackTip}`}>
                       {setupPct>0&&<div style={{width:`${setupPct}%`,background:"repeating-linear-gradient(-45deg,var(--surface-3),var(--surface-3) 3px,var(--border-alt) 3px,var(--border-alt) 6px)",flexShrink:0}}/>}
-                      <div style={{flex:1,background:batch.color,display:"flex",alignItems:"center",padding:"0 6px",opacity:.92,outline:batch.isLate?"2px solid #F87171":"none",outlineOffset:-1}}>
+                      <div style={{flex:1,background:batch.color,display:"flex",alignItems:"center",padding:"0 6px",opacity:.92,outline:slackOutline,outlineOffset:-1}}>
                         <span style={{fontSize:9,color:"rgba(255,255,255,.9)",fontWeight:600,fontFamily:"'DM Mono',monospace",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{batch.skuName.split(" ").slice(0,2).join(" ")}</span>
                       </div>
                     </div>
@@ -2165,7 +2220,7 @@ Responde en español.`;
         .brand{display:flex;align-items:center;gap:10px;}
         .brand-mark{width:30px;height:30px;background:linear-gradient(135deg,#F59E0B,#EF4444);border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:'Syne',sans-serif;font-weight:800;font-size:12px;color:#fff;}
         .brand-name{font-family:'Syne',sans-serif;font-weight:700;font-size:14px;letter-spacing:-.02em;}
-        .kpi-strip{display:grid;grid-template-columns:repeat(5,1fr);border-bottom:1px solid var(--border);flex-shrink:0;}
+        .kpi-strip{display:grid;grid-template-columns:repeat(6,1fr);border-bottom:1px solid var(--border);flex-shrink:0;}
         .kpi{padding:10px 16px;border-right:1px solid var(--border);}
         .kpi:last-child{border-right:none;}
         .body{display:grid;grid-template-columns:1fr 310px;flex:1;overflow:hidden;}
@@ -2229,8 +2284,10 @@ Responde en español.`;
             <span style={{width:1,height:18,background:"var(--border-alt)"}}/>
             <span style={{fontSize:11,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".06em"}}>Heurística</span>
             <select value={heuristic} onChange={e=>{setHeuristic(e.target.value);setCustomOrder(p=>({...p,[activeLine]:null}));}} style={{background:"var(--surface-2)",border:"1px solid var(--border-2)",color:"var(--text)",padding:"5px 10px",borderRadius:6,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",cursor:"pointer"}}>
+              <option value="MS">MS – Modified Slack ★ recomendado</option>
               <option value="EDD">EDD – Earliest Due Date</option>
               <option value="SPT">SPT – Shortest Processing Time</option>
+              <option value="LPT">LPT – Longest Processing Time</option>
               <option value="WSPT">WSPT – Weighted SPT</option>
               <option value="CR">CR – Critical Ratio</option>
               <option value="FIFO">FIFO</option>
@@ -2296,10 +2353,33 @@ Responde en español.`;
 
         <div className="kpi-strip">
           {[
-            { lbl:"Makespan",       val:`${schedule.kpis.makespan||0} min`,  sub:"tiempo total línea",                            c:schedule.kpis.lateOrders>0?"#FBBF24":"#34D399" },
-            { lbl:"Lotes programados", val:schedule.kpis.totalBatches||0,   sub:`de ${data.orders.filter(o=>o.lineId===activeLine).length} órdenes`, c:"#34D399" },
-            { lbl:"Órdenes tardías",   val:schedule.kpis.lateOrders||0,     sub:`en ${line?.name}`,                              c:(schedule.kpis.lateOrders||0)>0?"#F87171":"#34D399" },
-            { lbl:"Setup total",       val:`${schedule.kpis.totalSetup||0} min`, sub:"cambios de SKU",                          c:(schedule.kpis.totalSetup||0)>120?"#FBBF24":"#34D399" },
+            {
+              lbl:"% On-Time (OTIF)",
+              val: `${schedule.kpis.onTimePct||0}%`,
+              sub: `${schedule.kpis.onTime}/${schedule.kpis.totalBatches} lotes a tiempo`,
+              c: (schedule.kpis.onTimePct||0)>=95?"#34D399":(schedule.kpis.onTimePct||0)>=80?"#FBBF24":"#F87171",
+              bar: true,
+              pct: schedule.kpis.onTimePct||0
+            },
+            {
+              lbl:"Tmax (máx. tardanza)",
+              val: schedule.kpis.Tmax>0?`${schedule.kpis.Tmax} min`:"0",
+              sub: schedule.kpis.Tmax>0?`peor lote +${(schedule.kpis.Tmax/60).toFixed(1)}h`:"sin atrasos",
+              c: schedule.kpis.Tmax===0?"#34D399":schedule.kpis.Tmax<120?"#FBBF24":"#F87171"
+            },
+            {
+              lbl:"∑Tj (tardanza total)",
+              val: schedule.kpis.sumT>0?`${schedule.kpis.sumT} min`:"0",
+              sub: schedule.kpis.sumT>0?`acumulado en ${schedule.kpis.lateOrders} órdenes`:"todo cumple",
+              c: schedule.kpis.sumT===0?"#34D399":schedule.kpis.sumT<240?"#FBBF24":"#F87171"
+            },
+            {
+              lbl:"Holguras",
+              val: `${schedule.kpis.safe}·${schedule.kpis.risky}·${schedule.kpis.critical}`,
+              sub: `seguro · riesgo · crítico (min: ${schedule.kpis.minSlack>=0?"+":""}${(schedule.kpis.minSlack/60).toFixed(1)}h)`,
+              c: schedule.kpis.critical>0?"#F87171":schedule.kpis.risky>0?"#FBBF24":"#34D399"
+            },
+            { lbl:"Makespan + Setup", val:`${schedule.kpis.makespan||0}m`, sub:`+${schedule.kpis.totalSetup||0}m setup`, c:"var(--text-muted)" },
             {
               lbl: todayGoal>0 ? "Meta Hoy (COP)" : "Meta Facturación (COP)",
               val: todayGoal>0 ? `${todayPct.toFixed(0)}%` : `${billingPct.toFixed(0)}%`,
@@ -2318,7 +2398,7 @@ Responde en español.`;
           ))}
         </div>
 
-        <div className="body">
+        <div className="body" style={{gridTemplateColumns: showAiPanel ? "1fr 310px" : "1fr"}}>
           <div className="left">
             <div className="tabs">
               {[["gantt","Diagrama Gantt"],["orders","Órdenes de Producción"],["metas","Metas"],["config","Configuración"]].map(([id,lbl])=>(
@@ -2333,10 +2413,14 @@ Responde en español.`;
             </div>
           </div>
 
+          {showAiPanel && (
           <div className="ai-panel">
-            <div style={{padding:"12px 16px",borderBottom:"1px solid var(--border)",flexShrink:0}}>
-              <div style={{fontSize:13,fontWeight:600,fontFamily:"'Syne',sans-serif",display:"flex",alignItems:"center",gap:8}}><div className="ai-pulse"/>Asistente IA</div>
-              <div style={{fontSize:10,color:"var(--text-dim)",marginTop:2,fontFamily:"'DM Mono',monospace"}}>turnos · metas · reglas · SKUs · secuencias</div>
+            <div style={{padding:"12px 16px",borderBottom:"1px solid var(--border)",flexShrink:0,display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
+              <div>
+                <div style={{fontSize:13,fontWeight:600,fontFamily:"'Syne',sans-serif",display:"flex",alignItems:"center",gap:8}}><div className="ai-pulse"/>Asistente IA</div>
+                <div style={{fontSize:10,color:"var(--text-dim)",marginTop:2,fontFamily:"'DM Mono',monospace"}}>turnos · metas · reglas · SKUs · secuencias</div>
+              </div>
+              <button onClick={()=>setShowAiPanel(false)} title="Ocultar asistente IA" style={{width:24,height:24,borderRadius:5,background:"transparent",border:"1px solid var(--border-2)",color:"var(--text-dim)",cursor:"pointer",fontSize:15,lineHeight:1,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>×</button>
             </div>
             <div className="ai-msgs">
               {aiMessages.map((m,i)=>(
@@ -2355,7 +2439,18 @@ Responde en español.`;
               <button onClick={sendAI} disabled={isAiLoading||!aiInput.trim()} style={{background:"#F59E0B",border:"none",color:"var(--bg)",padding:"8px 12px",borderRadius:7,cursor:"pointer",fontSize:15,fontWeight:700,opacity:isAiLoading||!aiInput.trim()?0.35:1}}>↑</button>
             </div>
           </div>
+          )}
         </div>
+
+        {/* Floating button to re-show AI panel */}
+        {!showAiPanel && (
+          <button onClick={()=>setShowAiPanel(true)} title="Mostrar asistente IA" style={{position:"fixed",bottom:48,right:18,zIndex:50,width:48,height:48,borderRadius:"50%",background:"#F59E0B",border:"none",color:"var(--bg)",cursor:"pointer",fontSize:22,fontWeight:700,boxShadow:"0 4px 12px rgba(0,0,0,.3)",display:"flex",alignItems:"center",justifyContent:"center"}}>💬</button>
+        )}
+
+        {/* Footer credit */}
+        <footer style={{flexShrink:0,padding:"8px 18px",borderTop:"1px solid var(--border)",background:"var(--surface)",fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textAlign:"center",letterSpacing:".05em"}}>
+          Made by: <span style={{color:"var(--text-muted)",fontWeight:600}}>Said Yanett Alvarino</span>
+        </footer>
       </div>
     </>
   );
