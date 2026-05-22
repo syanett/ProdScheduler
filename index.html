@@ -230,7 +230,7 @@ const INITIAL_DATA = {
 //  SCHEDULER  (shift-aware)
 // ════════════════════════════════════════════════════════════════
 
-function buildSchedule(data, heuristic, lineId, customOrder, startTimeMs) {
+function buildSchedule(data, heuristic, lineId, customOrder, startTimeMs, use2opt) {
   const line = data.lines.find(l => l.id === lineId);
   if (!line) return { batches: [], violations: [], kpis: {} };
   const lineOrders = data.orders.filter(o => o.lineId === lineId);
@@ -387,8 +387,117 @@ function buildSchedule(data, heuristic, lineId, customOrder, startTimeMs) {
     batches.push(...sequenced);
   }
 
-  // --- violation detection (after resequencing) ---
+  // Initialize violations array (populated after 2-opt with final batch order)
   const violations = [];
+
+  // --- assign operations ---
+  // nowMs is the planning start: user-chosen start time, clamped so we don't plan in the past
+  const realNow = Date.now();
+  const nowMs   = (typeof startTimeMs === "number" && !isNaN(startTimeMs) && startTimeMs > realNow) ? startTimeMs : realNow;
+  const t0     = snapToShift(nowMs, shifts, wd, dOv);
+
+  // Helper: simulate scheduling for a given batch order and return Tmax + sumT
+  // (lightweight version used by 2-opt; full version below produces ops too)
+  function evaluateOrder(orderedBatches) {
+    const mA = {}, sA = {}, pSku = {};
+    line.machines.forEach(m => { mA[m.id] = t0; });
+    line.stages.forEach(s   => { sA[s.id] = t0; });
+    let maxT = 0, sumT = 0;
+    const sortedStages = line.stages.slice().sort((a,b) => a.order - b.order);
+    for (const batch of orderedBatches) {
+      let prevEnd = t0, finalEnd = nowMs;
+      for (const stage of sortedStages) {
+        const sms = line.machines.filter(m => m.stageId === stage.id);
+        if (!sms.length) continue;
+        const stMins    = (batch.stageTimes[stage.id] || 0) * batch.qty;
+        const setupMins = pSku[stage.id] && pSku[stage.id] !== batch.skuId
+          ? (line.setupMatrix[`${pSku[stage.id]}|${batch.skuId}`] || 0) : 0;
+        const machine   = sms.reduce((best,m) => (mA[m.id]||0) < (mA[best.id]||0) ? m : best, sms[0]);
+        const earliest  = Math.max(prevEnd, mA[machine.id]||0, sA[stage.id]||0);
+        const setupStartMs = snapToShift(earliest, shifts, wd, dOv);
+        const workStartMs  = setupMins > 0 ? addWorkingTime(setupStartMs, setupMins*60000, shifts, wd, dOv) : setupStartMs;
+        const opEndMs      = addWorkingTime(workStartMs, stMins*60000, shifts, wd, dOv);
+        mA[machine.id] = opEndMs; sA[stage.id] = opEndMs;
+        pSku[stage.id]  = batch.skuId; prevEnd = opEndMs; finalEnd = opEndMs;
+      }
+      const tard = Math.max(0, (finalEnd - new Date(batch.dueDate).getTime()) / 60000);
+      if (tard > maxT) maxT = tard;
+      sumT += tard;
+    }
+    return { Tmax: maxT, sumT };
+  }
+
+  // Helper: check if a sequence violates forbidden / priority constraints
+  function isValidSequence(seq) {
+    // Forbidden sequences
+    for (let i = 1; i < seq.length; i++) {
+      if (seq[i-1].skuId !== seq[i].skuId && isForbidden(seq[i-1].skuId, seq[i].skuId)) return false;
+    }
+    // Priority rules: from must appear before before
+    for (const rule of priRules) {
+      if (!rule.from || !rule.before || rule.from === rule.before) continue;
+      const firstFromIdx   = seq.findIndex(b => b.skuId === rule.from);
+      const firstBeforeIdx = seq.findIndex(b => b.skuId === rule.before);
+      if (firstFromIdx >= 0 && firstBeforeIdx >= 0 && firstFromIdx > firstBeforeIdx) return false;
+    }
+    // Backlog (negative inventory) SKUs must precede non-backlog
+    const skuById = Object.fromEntries(line.skus.map(s => [s.id, s]));
+    let seenNonBacklog = false;
+    for (const b of seq) {
+      const sku = skuById[b.skuId];
+      const isBack = sku && typeof sku.inventory === "number" && sku.inventory < 0;
+      if (isBack && seenNonBacklog) return false;
+      if (!isBack) seenNonBacklog = true;
+    }
+    return true;
+  }
+
+  // --- 2-OPT LOCAL SEARCH (post-heuristic optimization) ---
+  // Try swapping pairs (i,j) to reduce Tmax. Accept swap only if:
+  //   1. Resulting sequence respects forbidden/priority/backlog
+  //   2. Tmax decreases (primary) OR Tmax equal AND sumT decreases (secondary)
+  // Hard time cap to keep the UI responsive (default 800ms).
+  if (use2opt && !co && batches.length >= 2 && batches.length <= 60) { // skip if customOrder or too many batches
+    const deadline = Date.now() + 800; // 800 ms cap
+    let current = batches.slice();
+    let cur = evaluateOrder(current);
+    let improved = true;
+    let passes = 0, swaps = 0;
+    while (improved && Date.now() < deadline && passes < 8) {
+      improved = false;
+      passes++;
+      for (let i = 0; i < current.length - 1; i++) {
+        if (Date.now() >= deadline) break;
+        for (let j = i + 1; j < current.length; j++) {
+          // Skip same-SKU pairs (swap has no effect)
+          if (current[i].skuId === current[j].skuId) continue;
+          // Try swap
+          const candidate = current.slice();
+          [candidate[i], candidate[j]] = [candidate[j], candidate[i]];
+          if (!isValidSequence(candidate)) continue;
+          const evalNew = evaluateOrder(candidate);
+          // Accept if Tmax strictly improves, or equal Tmax + sumT improves
+          const better = (evalNew.Tmax < cur.Tmax) || (evalNew.Tmax === cur.Tmax && evalNew.sumT < cur.sumT);
+          if (better) {
+            current = candidate;
+            cur = evalNew;
+            improved = true;
+            swaps++;
+            break; // restart from this i
+          }
+        }
+        if (improved) break;
+      }
+    }
+    batches.length = 0;
+    batches.push(...current);
+    // Stats for diagnostics (attached to violations metadata)
+    if (swaps > 0) {
+      violations.unshift({ batchId: null, message: `2-opt: ${swaps} mejora(s) aplicada(s) en ${passes} pasada(s). Tmax → ${Math.round(cur.Tmax)}min`, _isInfo: true });
+    }
+  }
+
+  // --- violation detection (after final ordering) ---
   for (let i = 1; i < batches.length; i++) {
     if (batches[i-1].skuId !== batches[i].skuId) {
       const f = line.forbiddenSequences.find(fs => fs.from === batches[i-1].skuId && fs.to === batches[i].skuId);
@@ -396,11 +505,6 @@ function buildSchedule(data, heuristic, lineId, customOrder, startTimeMs) {
     }
   }
 
-  // --- assign operations ---
-  // nowMs is the planning start: user-chosen start time, clamped so we don't plan in the past
-  const realNow = Date.now();
-  const nowMs   = (typeof startTimeMs === "number" && !isNaN(startTimeMs) && startTimeMs > realNow) ? startTimeMs : realNow;
-  const t0     = snapToShift(nowMs, shifts, wd, dOv);
   const mAvail = {}, sAvail = {}, prevSku = {};
   line.machines.forEach(m => { mAvail[m.id] = t0; });
   line.stages.forEach(s   => { sAvail[s.id] = t0; });
@@ -543,6 +647,91 @@ function TextInput({ value, onCommit, style, title, placeholder, type="text" }) 
       title={title}
       placeholder={placeholder}
     />
+  );
+}
+
+// SKU autocomplete: type-to-search by code or name
+function SkuAutocomplete({ value, skus, onChange, style, placeholder = "Escribe código o nombre…" }) {
+  const selected = skus.find(s => s.id === value);
+  const [query, setQuery] = useState(selected ? `${selected.id} — ${selected.name}` : "");
+  const [open, setOpen]   = useState(false);
+  const [highlightIdx, setHighlightIdx] = useState(0);
+  const wrapRef = useRef(null);
+  const lastExternalRef = useRef(value);
+
+  // Re-sync when external value changes
+  useEffect(() => {
+    if (value !== lastExternalRef.current) {
+      lastExternalRef.current = value;
+      const s = skus.find(x => x.id === value);
+      setQuery(s ? `${s.id} — ${s.name}` : "");
+    }
+  }, [value, skus]);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    if (!open) return;
+    const onClick = (e) => { if (!wrapRef.current?.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, [open]);
+
+  // Filter: match by id (substring, case-insensitive) OR by name (substring)
+  const q = query.trim().toLowerCase();
+  const matches = q && (!selected || query !== `${selected.id} — ${selected.name}`)
+    ? skus.filter(s => s.id.toLowerCase().includes(q) || s.name.toLowerCase().includes(q)).slice(0, 12)
+    : skus.slice(0, 12);
+
+  const choose = (sku) => {
+    onChange(sku.id);
+    setQuery(`${sku.id} — ${sku.name}`);
+    setOpen(false);
+    setHighlightIdx(0);
+  };
+
+  return (
+    <div ref={wrapRef} style={{position:"relative",flex:1,minWidth:160}}>
+      <input
+        type="text"
+        value={query}
+        onChange={e => { setQuery(e.target.value); setOpen(true); setHighlightIdx(0); }}
+        onFocus={() => { setOpen(true); }}
+        onKeyDown={e => {
+          if (e.key === "ArrowDown") { e.preventDefault(); setOpen(true); setHighlightIdx(i => Math.min(i+1, matches.length-1)); }
+          else if (e.key === "ArrowUp") { e.preventDefault(); setHighlightIdx(i => Math.max(i-1, 0)); }
+          else if (e.key === "Enter") { e.preventDefault(); if (matches[highlightIdx]) choose(matches[highlightIdx]); }
+          else if (e.key === "Escape") { setOpen(false); const s = skus.find(x => x.id === value); setQuery(s ? `${s.id} — ${s.name}` : ""); }
+        }}
+        placeholder={placeholder}
+        style={{...style, width:"100%"}}
+      />
+      {open && matches.length > 0 && (
+        <div style={{position:"absolute",top:"calc(100% + 2px)",left:0,right:0,maxWidth:380,background:"var(--surface-2)",border:"1px solid var(--border-2)",borderRadius:6,boxShadow:"0 8px 24px rgba(0,0,0,.4)",zIndex:50,maxHeight:240,overflowY:"auto"}}>
+          {matches.map((s, i) => (
+            <div
+              key={s.id}
+              onMouseDown={(e) => { e.preventDefault(); choose(s); }}
+              onMouseEnter={() => setHighlightIdx(i)}
+              style={{
+                padding:"6px 10px",cursor:"pointer",fontSize:11,fontFamily:"'DM Mono',monospace",
+                display:"flex",alignItems:"center",gap:8,
+                background: i === highlightIdx ? "rgba(245,158,11,.12)" : "transparent",
+                borderBottom: i === matches.length - 1 ? "none" : "1px solid var(--border)"
+              }}>
+              <span style={{display:"inline-block",width:7,height:7,borderRadius:2,background:s.color,flexShrink:0}}/>
+              <span style={{color:"var(--text-dim)",minWidth:80}}>{s.id}</span>
+              <span style={{color:"var(--text)",flex:1}}>{s.name}</span>
+              {typeof s.inventory === "number" && s.inventory < 0 && <span style={{color:"#F87171",fontSize:9,padding:"1px 4px",background:"rgba(248,113,113,.1)",borderRadius:3}}>BACKLOG</span>}
+            </div>
+          ))}
+        </div>
+      )}
+      {open && matches.length === 0 && q && (
+        <div style={{position:"absolute",top:"calc(100% + 2px)",left:0,right:0,background:"var(--surface-2)",border:"1px solid var(--border-2)",borderRadius:6,padding:"8px 12px",fontSize:11,color:"var(--text-dim)",zIndex:50,fontFamily:"'DM Mono',monospace"}}>
+          Sin coincidencias. Verifica el código o nombre.
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -981,6 +1170,11 @@ function App() {
 
   const [activeLine,     setActiveLine]     = useState("L1");
   const [heuristic,      setHeuristic]      = useState("MS");
+  const [use2opt, setUse2opt] = useState(() => {
+    const v = localStorage.getItem("prodScheduler_v4_use2opt");
+    return v === null ? true : v === "true";
+  });
+  useEffect(() => { localStorage.setItem("prodScheduler_v4_use2opt", String(use2opt)); }, [use2opt]);
   const [activeTab,      setActiveTab]      = useState("gantt");
   const [activeConfigTab,setActiveConfigTab]= useState("stages");
   const [customOrder,    setCustomOrder]    = useState({ L1: null, L2: null });
@@ -1000,7 +1194,7 @@ function App() {
   const planStartActive = planStartMs && planStartMs > Date.now();
   const setPlanStart = (val) => setPlanStartByLine(p => ({ ...p, [activeLine]: val || "" }));
 
-  const schedule = useMemo(() => buildSchedule(data, heuristic, activeLine, customOrder, planStartMs), [data, heuristic, activeLine, customOrder, planStartMs]);
+  const schedule = useMemo(() => buildSchedule(data, heuristic, activeLine, customOrder, planStartMs, use2opt), [data, heuristic, activeLine, customOrder, planStartMs, use2opt]);
   const line     = data.lines.find(l => l.id === activeLine);
   useEffect(() => { chatRef.current?.scrollIntoView({ behavior:"smooth" }); }, [aiMessages]);
 
@@ -1011,13 +1205,13 @@ function App() {
       res[l.id] = {};
       const lineStartStr = planStartByLine[l.id] || "";
       const lineStartMs  = lineStartStr ? new Date(lineStartStr).getTime() : null;
-      buildSchedule(data, heuristic, l.id, customOrder, lineStartMs).batches.forEach(b => {
+      buildSchedule(data, heuristic, l.id, customOrder, lineStartMs, use2opt).batches.forEach(b => {
         const key = fmtDayKey(b.endTime);
         res[l.id][key] = (res[l.id][key]||0) + b.value;
       });
     });
     return res;
-  }, [data, heuristic, customOrder, planStartByLine]);
+  }, [data, heuristic, customOrder, planStartByLine, use2opt]);
 
   const todayKey    = fmtDayKey(new Date());
   const todayGoal   = data.dailyGoals?.[activeLine]?.[todayKey] || 0;
@@ -1276,6 +1470,135 @@ function App() {
       value: defaultValue, priority: 3, status: "pending"
     });
   }), [mutate]);
+
+  // Download Excel template for bulk orders import
+  const handleDownloadOrdersTemplate = useCallback((lid) => {
+    const lineObj = data.lines.find(l => l.id === lid);
+    if (!lineObj) return;
+    const header = ["Código SKU", "Cantidad (pzs)", "Fecha compromiso", "Prioridad (1-5)", "Valor unitario (COP, opcional)"];
+    // Pre-fill 2 example rows using the line's first SKUs
+    const futureDate = new Date(); futureDate.setDate(futureDate.getDate() + 7);
+    const futureStr  = `${futureDate.getFullYear()}-${String(futureDate.getMonth()+1).padStart(2,"0")}-${String(futureDate.getDate()).padStart(2,"0")}`;
+    const examples = lineObj.skus.slice(0, 2).map((sku, i) => [
+      sku.id, sku.batchSize * (i + 1), futureStr, 3, sku.unitValue || ""
+    ]);
+    if (!examples.length) examples.push(["SKU-EJEMPLO", 10, futureStr, 3, ""]);
+    // Reference sheet listing valid SKU codes
+    const skuRef = [["Código", "Nombre", "Familia", "Lote (pzs)", "Valor unit (COP)"], ...lineObj.skus.map(s => [s.id, s.name, s.family, s.batchSize, s.unitValue || 0])];
+    const wb = XLSX.utils.book_new();
+    const wsOrders = XLSX.utils.aoa_to_sheet([header, ...examples]);
+    wsOrders["!cols"] = [{wch:18},{wch:14},{wch:18},{wch:14},{wch:22}];
+    const wsRef = XLSX.utils.aoa_to_sheet([
+      ["INSTRUCCIONES:"],
+      ["1. Llena la hoja 'Órdenes' con una orden por fila."],
+      ["2. Código SKU: debe coincidir EXACTAMENTE con uno de la hoja 'SKUs disponibles'."],
+      ["3. Cantidad: piezas a producir (entero positivo)."],
+      ["4. Fecha compromiso: formato YYYY-MM-DD o YYYY-MM-DD HH:MM. Ej: 2026-06-15 o 2026-06-15 17:00"],
+      ["5. Prioridad: 1 (baja) a 5 (crítica). Si vacía, se usa 3."],
+      ["6. Valor unitario: opcional. Si vacío, se toma del SKU; si se especifica, sobrescribe el cálculo automático."],
+      ["7. Las órdenes existentes NO se borran; las nuevas se agregan con ID auto-generado."],
+      [],
+      [`Línea: ${lineObj.name}`],
+      [`Fecha de generación: ${new Date().toISOString().split("T")[0]}`],
+      [],
+      ["SKUs disponibles en esta línea:"],
+      ...skuRef
+    ]);
+    wsRef["!cols"] = [{wch:18},{wch:32},{wch:14},{wch:12},{wch:18}];
+    XLSX.utils.book_append_sheet(wb, wsOrders, "Órdenes");
+    XLSX.utils.book_append_sheet(wb, wsRef, "SKUs disponibles");
+    XLSX.writeFile(wb, `plantilla-ordenes-${lineObj.id}-${new Date().toISOString().split("T")[0]}.xlsx`);
+  }, [data]);
+
+  // Import orders from Excel
+  const handleImportOrders = useCallback((lid, event) => {
+    const file = event.target.files?.[0];
+    event.target.value = ""; // reset so same file can be re-uploaded
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const wb = XLSX.read(e.target.result, { type: "array", cellDates: true });
+        // Find the orders sheet — prefer "Órdenes", else first sheet
+        const sheetName = wb.SheetNames.find(n => /orden/i.test(n)) || wb.SheetNames[0];
+        const ws = wb.Sheets[sheetName];
+        const rows = XLSX.utils.sheet_to_json(ws, { header: 1, blankrows: false, defval: "" });
+        if (rows.length < 2) { alert("El archivo está vacío o sin filas de datos."); return; }
+        // Detect header: skip first row if it contains text in col 0
+        const hasHeader = typeof rows[0][0] === "string" && /sku|c[óo]digo/i.test(rows[0][0]);
+        const dataRows = hasHeader ? rows.slice(1) : rows;
+
+        mutate(d => {
+          const lineObj = d.lines.find(l => l.id === lid);
+          if (!lineObj) return;
+          const skuMap = new Map(lineObj.skus.map(s => [s.id.toLowerCase(), s]));
+          let added = 0, skipped = 0;
+          const errors = [];
+
+          dataRows.forEach((row, idx) => {
+            const rowNum = (hasHeader ? idx + 2 : idx + 1);
+            const [skuRaw, qtyRaw, dueRaw, prioRaw, unitValRaw] = row;
+            const skuKey = String(skuRaw || "").trim().toLowerCase();
+            if (!skuKey) { return; } // silently skip blank rows
+            const sku = skuMap.get(skuKey);
+            if (!sku) { errors.push(`Fila ${rowNum}: SKU "${skuRaw}" no existe en la línea.`); skipped++; return; }
+
+            const qty = parseInt(qtyRaw);
+            if (isNaN(qty) || qty <= 0) { errors.push(`Fila ${rowNum}: cantidad inválida (${qtyRaw}).`); skipped++; return; }
+
+            // Parse due date — accept Date object, "YYYY-MM-DD", "YYYY-MM-DD HH:MM", "DD/MM/YYYY"
+            let dueDateStr = "";
+            if (dueRaw instanceof Date && !isNaN(dueRaw)) {
+              const z = n => String(n).padStart(2,"0");
+              const h = dueRaw.getHours() === 0 && dueRaw.getMinutes() === 0 ? "17" : z(dueRaw.getHours());
+              const m = dueRaw.getHours() === 0 && dueRaw.getMinutes() === 0 ? "00" : z(dueRaw.getMinutes());
+              dueDateStr = `${dueRaw.getFullYear()}-${z(dueRaw.getMonth()+1)}-${z(dueRaw.getDate())}T${h}:${m}`;
+            } else if (typeof dueRaw === "string" || typeof dueRaw === "number") {
+              const s = String(dueRaw).trim();
+              // Try various formats
+              let parsed;
+              if (/^\d{4}-\d{2}-\d{2}/.test(s)) parsed = new Date(s.includes("T") || s.includes(" ") ? s.replace(" ", "T") : s + "T17:00");
+              else if (/^\d{1,2}\/\d{1,2}\/\d{4}/.test(s)) { const [d1,m1,y1] = s.split(/[\s\/]/); parsed = new Date(`${y1}-${String(m1).padStart(2,"0")}-${String(d1).padStart(2,"0")}T17:00`); }
+              else parsed = new Date(s);
+              if (parsed && !isNaN(parsed)) {
+                const z = n => String(n).padStart(2,"0");
+                dueDateStr = `${parsed.getFullYear()}-${z(parsed.getMonth()+1)}-${z(parsed.getDate())}T${z(parsed.getHours())}:${z(parsed.getMinutes())}`;
+              }
+            }
+            if (!dueDateStr) { errors.push(`Fila ${rowNum}: fecha inválida (${dueRaw}). Usa formato YYYY-MM-DD.`); skipped++; return; }
+
+            const priority = Math.max(1, Math.min(5, parseInt(prioRaw) || 3));
+            const unitVal = parseFloat(unitValRaw);
+            const effectiveUnitVal = !isNaN(unitVal) && unitVal > 0 ? unitVal : (sku.unitValue || 0);
+            const value = qty * effectiveUnitVal;
+
+            d.orders.push({
+              id: "OP" + String(d.orders.length + 1).padStart(3,"0") + ((Date.now()%100) + added),
+              lineId: lid,
+              skuId: sku.id,
+              qty,
+              dueDate: dueDateStr,
+              value,
+              priority,
+              status: "pending"
+            });
+            added++;
+          });
+
+          // Show result summary
+          let msg = `✓ ${added} orden(es) agregada(s).`;
+          if (skipped > 0) msg += `\n⚠ ${skipped} fila(s) omitida(s):`;
+          if (errors.length > 0) msg += "\n\n" + errors.slice(0, 10).join("\n") + (errors.length > 10 ? `\n…y ${errors.length-10} más.` : "");
+          setTimeout(() => alert(msg), 100);
+        });
+      } catch (err) {
+        console.error(err);
+        alert("Error al leer el archivo: " + err.message);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  }, [mutate]);
+
   const handleRemoveOrder = useCallback(oid => mutate(d => {
     d.orders = d.orders.filter(o => o.id !== oid);
   }), [mutate]);
@@ -1510,22 +1833,38 @@ Responde en español.`;
                 🚫 {ruleAvoided.length}/{forbiddenCount} rutas evitadas
               </span>
             )}
-            {schedule.violations.length === 0 && hasConstraints && (
+            {schedule.violations.filter(v=>!v._isInfo).length === 0 && hasConstraints && (
               <span style={{padding:"3px 9px",background:"rgba(52,211,153,.06)",border:"1px solid rgba(52,211,153,.2)",borderRadius:4,color:"#34D399",fontFamily:"'DM Mono',monospace",marginLeft:"auto"}}>
                 ✓ Sin conflictos
               </span>
             )}
           </div>
         )}
-        {schedule.violations.length > 0 && (
-          <div style={{display:"flex",gap:10,background:"rgba(248,113,113,.08)",border:"1px solid rgba(248,113,113,.25)",borderRadius:8,padding:"10px 14px",marginBottom:14,fontSize:12}}>
-            <span style={{fontSize:16,flexShrink:0}}>⚠</span>
-            <div>
-              <div style={{color:"#F87171",fontWeight:600,marginBottom:3,fontFamily:"'DM Mono',monospace",fontSize:11,textTransform:"uppercase"}}>Conflictos de secuencia inevitables</div>
-              {schedule.violations.map((v,i)=><div key={i} style={{color:"#FCA5A5",fontSize:12,lineHeight:1.5}}>{v.message}</div>)}
-            </div>
-          </div>
-        )}
+        {(() => {
+          const infos     = schedule.violations.filter(v => v._isInfo);
+          const conflicts = schedule.violations.filter(v => !v._isInfo);
+          return (
+            <>
+              {infos.length > 0 && (
+                <div style={{display:"flex",gap:10,background:"rgba(52,211,153,.06)",border:"1px solid rgba(52,211,153,.25)",borderRadius:8,padding:"8px 14px",marginBottom:10,fontSize:11,alignItems:"center"}}>
+                  <span style={{fontSize:14,flexShrink:0}}>🔧</span>
+                  <div style={{flex:1}}>
+                    {infos.map((v,i)=><div key={i} style={{color:"#34D399",fontSize:11,fontFamily:"'DM Mono',monospace"}}>{v.message}</div>)}
+                  </div>
+                </div>
+              )}
+              {conflicts.length > 0 && (
+                <div style={{display:"flex",gap:10,background:"rgba(248,113,113,.08)",border:"1px solid rgba(248,113,113,.25)",borderRadius:8,padding:"10px 14px",marginBottom:14,fontSize:12}}>
+                  <span style={{fontSize:16,flexShrink:0}}>⚠</span>
+                  <div>
+                    <div style={{color:"#F87171",fontWeight:600,marginBottom:3,fontFamily:"'DM Mono',monospace",fontSize:11,textTransform:"uppercase"}}>Conflictos de secuencia inevitables</div>
+                    {conflicts.map((v,i)=><div key={i} style={{color:"#FCA5A5",fontSize:12,lineHeight:1.5}}>{v.message}</div>)}
+                  </div>
+                </div>
+              )}
+            </>
+          );
+        })()}
 
         {/* ── DnD Sequence Panel ────────────────────────────── */}
         <div style={{marginBottom:12,padding:"9px 11px",background:"var(--surface)",borderRadius:7,border:"1px solid var(--border)"}}>
@@ -1635,14 +1974,27 @@ Responde en español.`;
     const dtToInput = (s) => { if(!s) return ""; const d = new Date(s); const z = n => String(n).padStart(2,"0"); return `${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())}T${z(d.getHours())}:${z(d.getMinutes())}`; };
     return (
       <div>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,gap:8,flexWrap:"wrap"}}>
           <div style={{fontSize:11,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em"}}>
             {lineOrders.length} {lineOrders.length===1?"orden":"órdenes"} en {line?.name}
           </div>
-          <button onClick={()=>handleAddOrder(activeLine)} disabled={!line.skus.length}
-            style={{fontSize:11,padding:"5px 12px",borderRadius:5,background:"rgba(245,158,11,.1)",border:"1px solid rgba(245,158,11,.3)",color:"#F59E0B",cursor:line.skus.length?"pointer":"not-allowed",opacity:line.skus.length?1:.4,fontFamily:"'DM Mono',monospace"}}>
-            + Agregar orden
-          </button>
+          <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+            <button onClick={()=>handleDownloadOrdersTemplate(activeLine)} disabled={!line.skus.length}
+              title="Descargar plantilla Excel con los SKUs disponibles para llenar masivamente"
+              style={{fontSize:10,padding:"5px 10px",borderRadius:5,background:"transparent",border:"1px solid var(--border-2)",color:"var(--text-muted)",cursor:line.skus.length?"pointer":"not-allowed",opacity:line.skus.length?1:.4,fontFamily:"'DM Mono',monospace"}}>
+              ↓ Plantilla
+            </button>
+            <label
+              title="Subir Excel/CSV con columnas: Código SKU, Cantidad, Fecha compromiso"
+              style={{fontSize:10,padding:"5px 10px",borderRadius:5,background:"rgba(56,189,248,.08)",border:"1px solid rgba(56,189,248,.3)",color:"#38BDF8",cursor:line.skus.length?"pointer":"not-allowed",opacity:line.skus.length?1:.4,fontFamily:"'DM Mono',monospace",display:"inline-block"}}>
+              ↑ Importar Excel
+              <input type="file" accept=".xlsx,.xls,.csv" disabled={!line.skus.length} onChange={e=>handleImportOrders(activeLine, e)} style={{display:"none"}}/>
+            </label>
+            <button onClick={()=>handleAddOrder(activeLine)} disabled={!line.skus.length}
+              style={{fontSize:11,padding:"5px 12px",borderRadius:5,background:"rgba(245,158,11,.1)",border:"1px solid rgba(245,158,11,.3)",color:"#F59E0B",cursor:line.skus.length?"pointer":"not-allowed",opacity:line.skus.length?1:.4,fontFamily:"'DM Mono',monospace"}}>
+              + Agregar orden
+            </button>
+          </div>
         </div>
         {lineOrders.length===0 ? (
           <div style={{textAlign:"center",padding:"40px 20px",color:"var(--text-dim)",fontSize:13,background:"var(--surface)",borderRadius:8,border:"1px dashed var(--border)"}}>
@@ -1664,13 +2016,13 @@ Responde en español.`;
               return (
                 <tr key={order.id} style={{borderBottom:"1px solid var(--surface)"}}>
                   <td style={{padding:"7px 10px",fontFamily:"'DM Mono',monospace",fontSize:11,color:"var(--text-dim)",whiteSpace:"nowrap"}}>{order.id}</td>
-                  <td style={{padding:"7px 10px"}}>
+                  <td style={{padding:"7px 10px",minWidth:200}}>
                     <div style={{display:"flex",alignItems:"center",gap:6}}>
                       <span style={{display:"inline-block",width:8,height:8,borderRadius:2,background:sku?.color||"var(--border-2)",flexShrink:0}}/>
-                      <select value={order.skuId} onChange={e=>handleUpdateOrder(order.id,"skuId",e.target.value)} style={{...inputStyle,minWidth:150}}>
-                        {line.skus.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
-                        {!sku&&<option value={order.skuId}>⚠ {order.skuId} (eliminado)</option>}
-                      </select>
+                      {!sku
+                        ? <span title={`SKU "${order.skuId}" no existe en la línea actual`} style={{fontSize:11,color:"#F87171",fontFamily:"'DM Mono',monospace"}}>⚠ {order.skuId} (eliminado)</span>
+                        : <SkuAutocomplete value={order.skuId} skus={line.skus} onChange={v=>handleUpdateOrder(order.id,"skuId",v)} style={inputStyle}/>
+                      }
                     </div>
                   </td>
                   <td style={{padding:"7px 10px"}}>
@@ -2292,6 +2644,19 @@ Responde en español.`;
               <option value="CR">CR – Critical Ratio</option>
               <option value="FIFO">FIFO</option>
             </select>
+            <button onClick={()=>setUse2opt(v=>!v)}
+              title={use2opt
+                ? "2-opt activo: post-optimización que intercambia pares para reducir Tmax (hasta 60 lotes). Click para desactivar."
+                : "2-opt desactivado. Click para activar post-optimización automática."}
+              style={{
+                padding:"5px 10px",borderRadius:6,
+                background: use2opt ? "rgba(52,211,153,.12)" : "transparent",
+                border: "1px solid " + (use2opt ? "rgba(52,211,153,.35)" : "var(--border-2)"),
+                color: use2opt ? "#34D399" : "var(--text-dim)",
+                cursor:"pointer",fontSize:10,fontFamily:"'DM Mono',monospace",fontWeight:600
+              }}>
+              {use2opt ? "🔧 2-opt ON" : "○ 2-opt"}
+            </button>
           </div>
         </header>
 
