@@ -1176,6 +1176,7 @@ function App() {
   });
   useEffect(() => { localStorage.setItem("prodScheduler_v4_use2opt", String(use2opt)); }, [use2opt]);
   const [activeTab,      setActiveTab]      = useState("gantt");
+  const [planView,       setPlanView]       = useState("chrono"); // chrono | byday | bymachine
   const [activeConfigTab,setActiveConfigTab]= useState("stages");
   const [customOrder,    setCustomOrder]    = useState({ L1: null, L2: null });
   const [dragId,         setDragId]         = useState(null);
@@ -1961,6 +1962,362 @@ Responde en español.`;
           <div style={{display:"flex",alignItems:"center",gap:5,fontSize:10,color:"var(--text-dim)"}}><div style={{width:10,height:10,background:"rgba(52,211,153,.15)",borderRadius:2,border:"1px solid rgba(52,211,153,.2)"}}/>Turno activo</div>
           {line.skus.map(s=><div key={s.id} style={{display:"flex",alignItems:"center",gap:5,fontSize:10,color:"var(--text-dim)"}}><div style={{width:10,height:10,borderRadius:2,background:s.color}}/>{s.name}</div>)}
         </div>
+      </div>
+    );
+  };
+
+  // ════════════════════════════════════════════════════════════
+  //  PLAN VIEW — Legible production schedule output
+  // ════════════════════════════════════════════════════════════
+  const PlanView = () => {
+    if (!line) return <div style={{padding:30,color:"var(--text-dim)"}}>Selecciona una línea.</div>;
+    if (!schedule.batches.length) return (
+      <div style={{textAlign:"center",padding:"40px 20px",color:"var(--text-dim)",fontSize:13,background:"var(--surface)",borderRadius:8,border:"1px dashed var(--border)"}}>
+        No hay producción programada. Crea órdenes en la pestaña <b>Órdenes</b>.
+      </div>
+    );
+
+    // Build a flat list of all operations sorted chronologically
+    const allOps = [];
+    schedule.batches.forEach((batch, batchIdx) => {
+      batch.ops.forEach(op => {
+        allOps.push({
+          batchIdx,
+          batchId: batch.id,
+          orderId: batch.orderId,
+          skuId: batch.skuId,
+          skuName: batch.skuName,
+          color: batch.color,
+          batchNum: batch.batchNum,
+          batchTotal: batch.batchTotal,
+          qty: batch.qty,
+          dueDate: batch.dueDate,
+          batchEnd: batch.endTime,
+          batchTard: batch.tardiness,
+          batchSlack: batch.slack,
+          batchLate: batch.isLate,
+          stageId: op.stageId,
+          stageName: op.stageName,
+          machineId: op.machineId,
+          machineName: op.machineName,
+          setupTime: op.setupTime,
+          setupStart: op.setupStart,
+          startTime: op.startTime,
+          endTime: op.endTime,
+        });
+      });
+    });
+    allOps.sort((a,b) => a.setupStart - b.setupStart);
+
+    // Format helpers
+    const fmtDateTime = (d) => d.toLocaleString("es-CO",{weekday:"short",day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"});
+    const fmtTime     = (d) => d.toLocaleTimeString("es-CO",{hour:"2-digit",minute:"2-digit"});
+    const fmtDate     = (d) => d.toLocaleDateString("es-CO",{weekday:"long",day:"2-digit",month:"long",year:"numeric"});
+    const fmtDur      = (mins) => {
+      const h = Math.floor(mins/60), m = Math.round(mins%60);
+      return h > 0 ? (m > 0 ? `${h}h ${m}m` : `${h}h`) : `${m}m`;
+    };
+    const dayKey = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+
+    // Export to Excel
+    const handleExport = () => {
+      const wb = XLSX.utils.book_new();
+
+      // Sheet 1: Cronológico
+      const chronoHeader = ["#","Orden","SKU","Lote","Cant. (pzs)","Etapa","Máquina","Setup (min)","Inicio","Fin","Duración","Fecha compromiso","Holgura","Estado"];
+      const chronoRows = allOps.map((o, i) => [
+        i + 1,
+        o.orderId,
+        `${o.skuId} — ${o.skuName}`,
+        `${o.batchNum}/${o.batchTotal}`,
+        o.qty,
+        o.stageName,
+        o.machineName,
+        o.setupTime || 0,
+        fmtDateTime(o.setupStart),
+        fmtDateTime(o.endTime),
+        fmtDur((o.endTime - o.setupStart)/60000),
+        new Date(o.dueDate).toLocaleString("es-CO"),
+        o.batchSlack < 0 ? `Atraso ${Math.round(o.batchTard)}m` : `+${(o.batchSlack/60).toFixed(1)}h`,
+        o.batchLate ? "ATRASADO" : o.batchSlack < 120 ? "CRÍTICO" : "A TIEMPO"
+      ]);
+      const wsChrono = XLSX.utils.aoa_to_sheet([chronoHeader, ...chronoRows]);
+      wsChrono["!cols"] = [{wch:4},{wch:10},{wch:32},{wch:8},{wch:11},{wch:14},{wch:14},{wch:11},{wch:22},{wch:22},{wch:11},{wch:22},{wch:14},{wch:11}];
+      XLSX.utils.book_append_sheet(wb, wsChrono, "Cronológico");
+
+      // Sheet 2: Resumen por orden
+      const byOrder = {};
+      schedule.batches.forEach(b => {
+        if (!byOrder[b.orderId]) byOrder[b.orderId] = { orderId: b.orderId, skuName: b.skuName, totalQty: 0, batches: 0, firstStart: b.startTime, lastEnd: b.endTime, dueDate: b.dueDate, tardiness: b.tardiness, slack: b.slack };
+        const e = byOrder[b.orderId];
+        e.totalQty += b.qty; e.batches++;
+        if (b.startTime < e.firstStart) e.firstStart = b.startTime;
+        if (b.endTime > e.lastEnd) e.lastEnd = b.endTime;
+      });
+      const orderHeader = ["Orden","SKU","Cant. total","Lotes","Inicio","Fin","Duración","Fecha compromiso","Holgura","Estado"];
+      const orderRows = Object.values(byOrder).map(o => [
+        o.orderId, o.skuName, o.totalQty, o.batches,
+        fmtDateTime(o.firstStart), fmtDateTime(o.lastEnd),
+        fmtDur((o.lastEnd - o.firstStart)/60000),
+        new Date(o.dueDate).toLocaleString("es-CO"),
+        o.slack < 0 ? `Atraso ${Math.round(o.tardiness)}m` : `+${(o.slack/60).toFixed(1)}h`,
+        o.tardiness > 0 ? "ATRASADO" : o.slack < 120 ? "CRÍTICO" : "A TIEMPO"
+      ]);
+      const wsOrder = XLSX.utils.aoa_to_sheet([orderHeader, ...orderRows]);
+      wsOrder["!cols"] = [{wch:10},{wch:32},{wch:12},{wch:7},{wch:22},{wch:22},{wch:11},{wch:22},{wch:14},{wch:11}];
+      XLSX.utils.book_append_sheet(wb, wsOrder, "Por Orden");
+
+      // Sheet 3: Resumen por día
+      const byDay = {};
+      allOps.forEach(o => {
+        const k = dayKey(o.setupStart);
+        if (!byDay[k]) byDay[k] = { date: new Date(o.setupStart.getFullYear(), o.setupStart.getMonth(), o.setupStart.getDate()), ops: [], totalQty: 0, totalSetup: 0 };
+        byDay[k].ops.push(o);
+        byDay[k].totalSetup += o.setupTime || 0;
+      });
+      // Sum qty by unique batch within each day
+      Object.values(byDay).forEach(d => {
+        const seen = new Set();
+        d.ops.forEach(o => {
+          const key = o.batchId + "|" + o.stageId; // count qty once per batch (first stage)
+          if (!seen.has(o.batchId)) { d.totalQty += o.qty; seen.add(o.batchId); }
+        });
+      });
+      const dayHeader = ["Día","# Operaciones","# Lotes únicos","Piezas (suma)","Setup total (min)"];
+      const dayRows = Object.values(byDay).sort((a,b)=>a.date-b.date).map(d => [
+        fmtDate(d.date), d.ops.length, new Set(d.ops.map(o=>o.batchId)).size, d.totalQty, d.totalSetup
+      ]);
+      const wsDay = XLSX.utils.aoa_to_sheet([dayHeader, ...dayRows]);
+      wsDay["!cols"] = [{wch:32},{wch:15},{wch:16},{wch:14},{wch:18}];
+      XLSX.utils.book_append_sheet(wb, wsDay, "Por Día");
+
+      XLSX.writeFile(wb, `plan-produccion-${line.id}-${new Date().toISOString().split("T")[0]}.xlsx`);
+    };
+
+    // KPI summary at top
+    const headerSummary = (
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(160px, 1fr))",gap:8,marginBottom:14}}>
+        <div style={{padding:"10px 12px",background:"var(--surface)",border:"1px solid var(--border)",borderRadius:7}}>
+          <div style={{fontSize:9,color:"var(--text-dim)",textTransform:"uppercase",letterSpacing:".07em",fontFamily:"'DM Mono',monospace"}}>Total operaciones</div>
+          <div style={{fontSize:20,fontWeight:700,fontFamily:"'Syne',sans-serif",marginTop:2}}>{allOps.length}</div>
+        </div>
+        <div style={{padding:"10px 12px",background:"var(--surface)",border:"1px solid var(--border)",borderRadius:7}}>
+          <div style={{fontSize:9,color:"var(--text-dim)",textTransform:"uppercase",letterSpacing:".07em",fontFamily:"'DM Mono',monospace"}}>Lotes programados</div>
+          <div style={{fontSize:20,fontWeight:700,fontFamily:"'Syne',sans-serif",marginTop:2}}>{schedule.batches.length}</div>
+        </div>
+        <div style={{padding:"10px 12px",background:"var(--surface)",border:"1px solid var(--border)",borderRadius:7}}>
+          <div style={{fontSize:9,color:"var(--text-dim)",textTransform:"uppercase",letterSpacing:".07em",fontFamily:"'DM Mono',monospace"}}>Inicio</div>
+          <div style={{fontSize:13,fontWeight:600,fontFamily:"'DM Mono',monospace",marginTop:3}}>{allOps.length ? fmtDateTime(allOps[0].setupStart) : "—"}</div>
+        </div>
+        <div style={{padding:"10px 12px",background:"var(--surface)",border:"1px solid var(--border)",borderRadius:7}}>
+          <div style={{fontSize:9,color:"var(--text-dim)",textTransform:"uppercase",letterSpacing:".07em",fontFamily:"'DM Mono',monospace"}}>Fin estimado</div>
+          <div style={{fontSize:13,fontWeight:600,fontFamily:"'DM Mono',monospace",marginTop:3}}>{allOps.length ? fmtDateTime(new Date(Math.max(...allOps.map(o=>o.endTime.getTime())))) : "—"}</div>
+        </div>
+        <div style={{padding:"10px 12px",background:"var(--surface)",border:"1px solid var(--border)",borderRadius:7}}>
+          <div style={{fontSize:9,color:"var(--text-dim)",textTransform:"uppercase",letterSpacing:".07em",fontFamily:"'DM Mono',monospace"}}>OTIF</div>
+          <div style={{fontSize:20,fontWeight:700,fontFamily:"'Syne',sans-serif",marginTop:2,color: schedule.kpis.onTimePct>=95?"#34D399":schedule.kpis.onTimePct>=80?"#FBBF24":"#F87171"}}>{schedule.kpis.onTimePct}%</div>
+        </div>
+      </div>
+    );
+
+    // Status badge helper
+    const statusBadge = (slack, late, tard) => {
+      if (late) return <span style={{padding:"2px 7px",borderRadius:4,fontSize:9,fontWeight:600,fontFamily:"'DM Mono',monospace",background:"rgba(248,113,113,.15)",color:"#F87171",border:"1px solid rgba(248,113,113,.3)"}}>ATRASO {Math.round(tard)}m</span>;
+      if (slack < 120) return <span style={{padding:"2px 7px",borderRadius:4,fontSize:9,fontWeight:600,fontFamily:"'DM Mono',monospace",background:"rgba(245,158,11,.12)",color:"#F59E0B",border:"1px solid rgba(245,158,11,.3)"}}>CRÍTICO</span>;
+      return <span style={{padding:"2px 7px",borderRadius:4,fontSize:9,fontWeight:600,fontFamily:"'DM Mono',monospace",background:"rgba(52,211,153,.12)",color:"#34D399",border:"1px solid rgba(52,211,153,.3)"}}>A TIEMPO</span>;
+    };
+
+    // ────────────────────────────────────────
+    // VIEW: Chronological table
+    // ────────────────────────────────────────
+    const ChronoView = () => (
+      <div style={{overflowX:"auto"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,minWidth:1100}}>
+          <thead>
+            <tr>
+              {["#","Orden","SKU","Lote","Cant.","Etapa","Máquina","Setup","Inicio","Fin","Duración","F. compromiso","Holgura","Estado"].map(h => (
+                <th key={h} style={{textAlign:"left",fontSize:9,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"7px 9px",borderBottom:"1px solid var(--border)",whiteSpace:"nowrap",background:"var(--surface)",position:"sticky",top:0,zIndex:2}}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {allOps.map((o, i) => (
+              <tr key={`${o.batchId}-${o.stageId}`} style={{borderBottom:"1px solid var(--surface)",background: i % 2 === 0 ? "transparent" : "rgba(255,255,255,.015)"}}>
+                <td style={{padding:"6px 9px",fontFamily:"'DM Mono',monospace",color:"var(--text-dim)",fontSize:10}}>{i+1}</td>
+                <td style={{padding:"6px 9px",fontFamily:"'DM Mono',monospace",fontSize:10,whiteSpace:"nowrap"}}>{o.orderId}</td>
+                <td style={{padding:"6px 9px",whiteSpace:"nowrap"}}>
+                  <span style={{display:"inline-block",width:7,height:7,borderRadius:2,background:o.color,marginRight:6,verticalAlign:"middle"}}/>
+                  <span style={{fontSize:11}}>{o.skuName}</span>
+                  <div style={{fontSize:9,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",marginLeft:13}}>{o.skuId}</div>
+                </td>
+                <td style={{padding:"6px 9px",fontFamily:"'DM Mono',monospace",fontSize:10,whiteSpace:"nowrap"}}>{o.batchNum}/{o.batchTotal}</td>
+                <td style={{padding:"6px 9px",fontFamily:"'DM Mono',monospace",fontSize:11,fontWeight:600}}>{o.qty}</td>
+                <td style={{padding:"6px 9px",fontSize:11,whiteSpace:"nowrap"}}>{o.stageName}</td>
+                <td style={{padding:"6px 9px",fontSize:11,color:"var(--text-muted)",whiteSpace:"nowrap"}}>{o.machineName}</td>
+                <td style={{padding:"6px 9px",fontFamily:"'DM Mono',monospace",fontSize:10,color:o.setupTime>0?"#FBBF24":"var(--text-dim)"}}>{o.setupTime > 0 ? `${o.setupTime}m` : "—"}</td>
+                <td style={{padding:"6px 9px",fontFamily:"'DM Mono',monospace",fontSize:10,whiteSpace:"nowrap"}}>{fmtDateTime(o.setupStart)}</td>
+                <td style={{padding:"6px 9px",fontFamily:"'DM Mono',monospace",fontSize:10,whiteSpace:"nowrap"}}>{fmtDateTime(o.endTime)}</td>
+                <td style={{padding:"6px 9px",fontFamily:"'DM Mono',monospace",fontSize:10,fontWeight:600,whiteSpace:"nowrap"}}>{fmtDur((o.endTime - o.setupStart)/60000)}</td>
+                <td style={{padding:"6px 9px",fontFamily:"'DM Mono',monospace",fontSize:10,color:"var(--text-muted)",whiteSpace:"nowrap"}}>{new Date(o.dueDate).toLocaleString("es-CO",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})}</td>
+                <td style={{padding:"6px 9px",fontFamily:"'DM Mono',monospace",fontSize:10,fontWeight:600,whiteSpace:"nowrap",color:o.batchSlack < 0 ? "#F87171" : o.batchSlack < 120 ? "#F59E0B" : "#34D399"}}>
+                  {o.batchSlack < 0 ? `-${Math.abs(o.batchSlack/60).toFixed(1)}h` : `+${(o.batchSlack/60).toFixed(1)}h`}
+                </td>
+                <td style={{padding:"6px 9px",whiteSpace:"nowrap"}}>{statusBadge(o.batchSlack, o.batchLate, o.batchTard)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+
+    // ────────────────────────────────────────
+    // VIEW: By day
+    // ────────────────────────────────────────
+    const ByDayView = () => {
+      const byDay = {};
+      allOps.forEach(o => {
+        const k = dayKey(o.setupStart);
+        if (!byDay[k]) byDay[k] = { date: new Date(o.setupStart.getFullYear(), o.setupStart.getMonth(), o.setupStart.getDate()), ops: [] };
+        byDay[k].ops.push(o);
+      });
+      const days = Object.values(byDay).sort((a,b)=>a.date-b.date);
+      return (
+        <div style={{display:"flex",flexDirection:"column",gap:14}}>
+          {days.map(d => {
+            const uniqueBatches = new Set(d.ops.map(o=>o.batchId)).size;
+            const totalQty = d.ops.reduce((s,o,_,arr)=>{
+              if (arr.findIndex(x=>x.batchId===o.batchId) === arr.indexOf(o)) return s + o.qty;
+              return s;
+            }, 0);
+            const totalSetup = d.ops.reduce((s,o)=>s+(o.setupTime||0),0);
+            const totalProcMin = d.ops.reduce((s,o)=>s+((o.endTime-o.startTime)/60000),0);
+            const lateCount = d.ops.filter(o=>o.batchLate).length;
+            return (
+              <div key={d.date.getTime()} style={{background:"var(--surface)",border:"1px solid var(--border)",borderRadius:8,overflow:"hidden"}}>
+                <div style={{padding:"10px 14px",background:"var(--surface-2)",borderBottom:"1px solid var(--border)",display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
+                  <div>
+                    <div style={{fontSize:13,fontWeight:600,fontFamily:"'Syne',sans-serif",textTransform:"capitalize"}}>{fmtDate(d.date)}</div>
+                    <div style={{fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",marginTop:2}}>
+                      {d.ops.length} operaciones · {uniqueBatches} lotes · {totalQty} pzs · {fmtDur(totalProcMin)} producción · {totalSetup}m setup
+                    </div>
+                  </div>
+                  {lateCount > 0 && <span style={{padding:"3px 8px",borderRadius:4,fontSize:10,fontWeight:600,fontFamily:"'DM Mono',monospace",background:"rgba(248,113,113,.15)",color:"#F87171",border:"1px solid rgba(248,113,113,.3)"}}>⚠ {lateCount} atrasos</span>}
+                </div>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                  <thead>
+                    <tr>{["Hora","SKU","Lote","Cant.","Etapa","Máquina","Duración","Estado"].map(h => (
+                      <th key={h} style={{textAlign:"left",fontSize:9,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"6px 10px",borderBottom:"1px solid var(--surface-2)",whiteSpace:"nowrap"}}>{h}</th>
+                    ))}</tr>
+                  </thead>
+                  <tbody>
+                    {d.ops.map(o => (
+                      <tr key={`${o.batchId}-${o.stageId}`} style={{borderBottom:"1px solid var(--surface-2)"}}>
+                        <td style={{padding:"5px 10px",fontFamily:"'DM Mono',monospace",fontSize:10,whiteSpace:"nowrap"}}>{fmtTime(o.setupStart)}–{fmtTime(o.endTime)}</td>
+                        <td style={{padding:"5px 10px",whiteSpace:"nowrap"}}>
+                          <span style={{display:"inline-block",width:7,height:7,borderRadius:2,background:o.color,marginRight:6,verticalAlign:"middle"}}/>
+                          <span style={{fontSize:11}}>{o.skuName}</span>
+                        </td>
+                        <td style={{padding:"5px 10px",fontFamily:"'DM Mono',monospace",fontSize:10,whiteSpace:"nowrap"}}>{o.batchNum}/{o.batchTotal}</td>
+                        <td style={{padding:"5px 10px",fontFamily:"'DM Mono',monospace",fontSize:10,fontWeight:600}}>{o.qty}</td>
+                        <td style={{padding:"5px 10px",fontSize:11,whiteSpace:"nowrap"}}>{o.stageName}</td>
+                        <td style={{padding:"5px 10px",fontSize:11,color:"var(--text-muted)",whiteSpace:"nowrap"}}>{o.machineName}</td>
+                        <td style={{padding:"5px 10px",fontFamily:"'DM Mono',monospace",fontSize:10,whiteSpace:"nowrap"}}>{fmtDur((o.endTime-o.setupStart)/60000)}{o.setupTime>0 && <span style={{color:"#FBBF24",marginLeft:4}}>(+{o.setupTime}m setup)</span>}</td>
+                        <td style={{padding:"5px 10px",whiteSpace:"nowrap"}}>{statusBadge(o.batchSlack, o.batchLate, o.batchTard)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            );
+          })}
+        </div>
+      );
+    };
+
+    // ────────────────────────────────────────
+    // VIEW: By machine
+    // ────────────────────────────────────────
+    const ByMachineView = () => {
+      const byMachine = {};
+      allOps.forEach(o => {
+        if (!byMachine[o.machineId]) byMachine[o.machineId] = { machineId: o.machineId, machineName: o.machineName, stageName: o.stageName, ops: [] };
+        byMachine[o.machineId].ops.push(o);
+      });
+      const machines = Object.values(byMachine).sort((a,b) => a.machineName.localeCompare(b.machineName));
+      return (
+        <div style={{display:"flex",flexDirection:"column",gap:14}}>
+          {machines.map(m => {
+            const totalMin = m.ops.reduce((s,o)=>s+((o.endTime-o.setupStart)/60000),0);
+            const setupMin = m.ops.reduce((s,o)=>s+(o.setupTime||0),0);
+            const firstStart = new Date(Math.min(...m.ops.map(o=>o.setupStart.getTime())));
+            const lastEnd = new Date(Math.max(...m.ops.map(o=>o.endTime.getTime())));
+            const span = (lastEnd - firstStart)/60000;
+            const utilization = span > 0 ? Math.round((totalMin/span)*100) : 0;
+            return (
+              <div key={m.machineId} style={{background:"var(--surface)",border:"1px solid var(--border)",borderRadius:8,overflow:"hidden"}}>
+                <div style={{padding:"10px 14px",background:"var(--surface-2)",borderBottom:"1px solid var(--border)",display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
+                  <div>
+                    <div style={{fontSize:13,fontWeight:600,fontFamily:"'Syne',sans-serif"}}>{m.machineName} <span style={{fontSize:10,color:"var(--text-dim)",marginLeft:6,fontFamily:"'DM Mono',monospace",textTransform:"uppercase"}}>({m.stageName})</span></div>
+                    <div style={{fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",marginTop:2}}>
+                      {m.ops.length} operaciones · {fmtDur(totalMin)} producción · {setupMin}m setup · {fmtDur(span)} ventana total
+                    </div>
+                  </div>
+                  <div style={{padding:"4px 10px",borderRadius:5,background: utilization > 80 ? "rgba(248,113,113,.12)" : utilization > 60 ? "rgba(245,158,11,.12)" : "rgba(52,211,153,.12)", border: "1px solid " + (utilization > 80 ? "rgba(248,113,113,.3)" : utilization > 60 ? "rgba(245,158,11,.3)" : "rgba(52,211,153,.3)"), color: utilization > 80 ? "#F87171" : utilization > 60 ? "#F59E0B" : "#34D399", fontFamily:"'DM Mono',monospace", fontSize:10, fontWeight:600}}>
+                    Util: {utilization}%
+                  </div>
+                </div>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                  <thead>
+                    <tr>{["#","Orden","SKU","Lote","Cant.","Setup","Inicio","Fin","Duración"].map(h => (
+                      <th key={h} style={{textAlign:"left",fontSize:9,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"6px 10px",borderBottom:"1px solid var(--surface-2)",whiteSpace:"nowrap"}}>{h}</th>
+                    ))}</tr>
+                  </thead>
+                  <tbody>
+                    {m.ops.map((o, i) => (
+                      <tr key={`${o.batchId}-${o.stageId}`} style={{borderBottom:"1px solid var(--surface-2)"}}>
+                        <td style={{padding:"5px 10px",fontFamily:"'DM Mono',monospace",fontSize:10,color:"var(--text-dim)"}}>{i+1}</td>
+                        <td style={{padding:"5px 10px",fontFamily:"'DM Mono',monospace",fontSize:10,whiteSpace:"nowrap"}}>{o.orderId}</td>
+                        <td style={{padding:"5px 10px",whiteSpace:"nowrap"}}>
+                          <span style={{display:"inline-block",width:7,height:7,borderRadius:2,background:o.color,marginRight:6,verticalAlign:"middle"}}/>
+                          <span style={{fontSize:11}}>{o.skuName}</span>
+                        </td>
+                        <td style={{padding:"5px 10px",fontFamily:"'DM Mono',monospace",fontSize:10,whiteSpace:"nowrap"}}>{o.batchNum}/{o.batchTotal}</td>
+                        <td style={{padding:"5px 10px",fontFamily:"'DM Mono',monospace",fontSize:10,fontWeight:600}}>{o.qty}</td>
+                        <td style={{padding:"5px 10px",fontFamily:"'DM Mono',monospace",fontSize:10,color:o.setupTime>0?"#FBBF24":"var(--text-dim)"}}>{o.setupTime > 0 ? `${o.setupTime}m` : "—"}</td>
+                        <td style={{padding:"5px 10px",fontFamily:"'DM Mono',monospace",fontSize:10,whiteSpace:"nowrap"}}>{fmtDateTime(o.setupStart)}</td>
+                        <td style={{padding:"5px 10px",fontFamily:"'DM Mono',monospace",fontSize:10,whiteSpace:"nowrap"}}>{fmtDateTime(o.endTime)}</td>
+                        <td style={{padding:"5px 10px",fontFamily:"'DM Mono',monospace",fontSize:10,fontWeight:600,whiteSpace:"nowrap"}}>{fmtDur((o.endTime-o.setupStart)/60000)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            );
+          })}
+        </div>
+      );
+    };
+
+    return (
+      <div>
+        {/* Toolbar: view switch + export */}
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14,flexWrap:"wrap",gap:8}}>
+          <div style={{display:"flex",gap:4,background:"var(--surface)",padding:3,borderRadius:6,border:"1px solid var(--border)"}}>
+            {[["chrono","📋 Cronológico"],["byday","📅 Por Día"],["bymachine","🔧 Por Máquina"]].map(([id,lbl]) => (
+              <button key={id} onClick={()=>setPlanView(id)} style={{padding:"5px 12px",borderRadius:4,border:"none",fontFamily:"'DM Mono',monospace",fontSize:11,cursor:"pointer",
+                background: planView===id ? "var(--surface-2)" : "transparent",
+                color: planView===id ? "var(--text)" : "var(--text-dim)",
+                fontWeight: planView===id ? 600 : 400}}>{lbl}</button>
+            ))}
+          </div>
+          <button onClick={handleExport} style={{padding:"6px 14px",borderRadius:5,background:"rgba(52,211,153,.1)",border:"1px solid rgba(52,211,153,.3)",color:"#34D399",cursor:"pointer",fontFamily:"'DM Mono',monospace",fontSize:11,fontWeight:600}}>
+            ↓ Exportar a Excel
+          </button>
+        </div>
+        {headerSummary}
+        {planView==="chrono" && <ChronoView/>}
+        {planView==="byday" && <ByDayView/>}
+        {planView==="bymachine" && <ByMachineView/>}
       </div>
     );
   };
@@ -2766,12 +3123,13 @@ Responde en español.`;
         <div className="body" style={{gridTemplateColumns: showAiPanel ? "1fr 310px" : "1fr"}}>
           <div className="left">
             <div className="tabs">
-              {[["gantt","Diagrama Gantt"],["orders","Órdenes de Producción"],["metas","Metas"],["config","Configuración"]].map(([id,lbl])=>(
+              {[["gantt","Diagrama Gantt"],["plan","Plan de Producción"],["orders","Órdenes de Producción"],["metas","Metas"],["config","Configuración"]].map(([id,lbl])=>(
                 <button key={id} className={`tab-btn ${activeTab===id?"active":""}`} onClick={()=>setActiveTab(id)}>{lbl}</button>
               ))}
             </div>
             <div className="panel">
               {activeTab==="gantt"   && GanttView()}
+              {activeTab==="plan"    && PlanView()}
               {activeTab==="orders"  && OrdersView()}
               {activeTab==="metas"   && MetasView()}
               {activeTab==="config"  && ConfigView()}
