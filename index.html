@@ -1177,6 +1177,11 @@ function App() {
   useEffect(() => { localStorage.setItem("prodScheduler_v4_use2opt", String(use2opt)); }, [use2opt]);
   const [activeTab,      setActiveTab]      = useState("gantt");
   const [planView,       setPlanView]       = useState("chrono"); // chrono | byday | bymachine
+  const [seqPanelOpen,   setSeqPanelOpen]   = useState(() => {
+    const v = localStorage.getItem("prodScheduler_v4_seqPanelOpen");
+    return v === null ? true : v === "true";
+  });
+  useEffect(() => { localStorage.setItem("prodScheduler_v4_seqPanelOpen", String(seqPanelOpen)); }, [seqPanelOpen]);
   const [activeConfigTab,setActiveConfigTab]= useState("stages");
   const [customOrder,    setCustomOrder]    = useState({ L1: null, L2: null });
   const [dragId,         setDragId]         = useState(null);
@@ -1867,36 +1872,44 @@ Responde en español.`;
           );
         })()}
 
-        {/* ── DnD Sequence Panel ────────────────────────────── */}
-        <div style={{marginBottom:12,padding:"9px 11px",background:"var(--surface)",borderRadius:7,border:"1px solid var(--border)"}}>
-          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:7}}>
-            <span style={{fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em"}}>
-              ⠿ Secuencia de lotes — arrastra para reordenar
-            </span>
-            {customOrder[activeLine] && (
-              <button onClick={()=>setCustomOrder(p=>({...p,[activeLine]:null}))} style={{fontSize:10,padding:"2px 9px",borderRadius:4,background:"rgba(245,158,11,.1)",border:"1px solid rgba(245,158,11,.3)",color:"#F59E0B",cursor:"pointer"}}>
+        {/* ── DnD Sequence Panel (collapsible) ───────────────── */}
+        <div style={{marginBottom:12,padding:seqPanelOpen?"9px 11px":"7px 11px",background:"var(--surface)",borderRadius:7,border:"1px solid var(--border)",transition:"padding .15s"}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:seqPanelOpen?7:0}}>
+            <button
+              onClick={()=>setSeqPanelOpen(v=>!v)}
+              title={seqPanelOpen?"Ocultar secuencia":"Mostrar secuencia"}
+              style={{background:"transparent",border:"none",color:"var(--text-dim)",cursor:"pointer",padding:0,fontSize:10,fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",display:"flex",alignItems:"center",gap:6}}>
+              <span style={{display:"inline-block",transform:seqPanelOpen?"rotate(90deg)":"rotate(0deg)",transition:"transform .15s",fontSize:9,color:"var(--text-muted)"}}>▶</span>
+              ⠿ Secuencia de lotes
+              {!seqPanelOpen && <span style={{color:"var(--text-muted)",marginLeft:4,textTransform:"none",letterSpacing:0}}>({ordered.length} {ordered.length===1?"lote":"lotes"}{customOrder[activeLine]?" · orden personalizado":""})</span>}
+              {seqPanelOpen && <span style={{color:"var(--text-muted)",marginLeft:2,textTransform:"none",letterSpacing:0,fontSize:9}}>— arrastra para reordenar</span>}
+            </button>
+            {customOrder[activeLine] && seqPanelOpen && (
+              <button onClick={(e)=>{e.stopPropagation();setCustomOrder(p=>({...p,[activeLine]:null}));}} style={{fontSize:10,padding:"2px 9px",borderRadius:4,background:"rgba(245,158,11,.1)",border:"1px solid rgba(245,158,11,.3)",color:"#F59E0B",cursor:"pointer"}}>
                 ↺ Restaurar {heuristic}
               </button>
             )}
           </div>
-          <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
-            {ordered.map((batch,idx) => (
-              <div key={batch.id} draggable
-                onDragStart={()=>setDragId(batch.id)}
-                onDragOver={e=>{e.preventDefault();setDragOver(idx);}}
-                onDrop={()=>handleBatchDrop(idx)}
-                onDragEnd={()=>{setDragId(null);setDragOver(null);}}
-                style={{display:"flex",alignItems:"center",gap:4,padding:"3px 9px",borderRadius:5,
-                  background:dragId===batch.id?"rgba(245,158,11,.12)":"var(--surface-2)",
-                  border:dragOver===idx&&dragId!==batch.id?"1px solid #F59E0B":"1px solid var(--border-2)",
-                  cursor:"grab",opacity:dragId===batch.id?.4:1,fontSize:10,fontFamily:"'DM Mono',monospace",
-                  userSelect:"none",transition:"border-color .1s,opacity .1s"}}>
-                <div style={{width:7,height:7,borderRadius:2,background:batch.color,flexShrink:0}}/>
-                <span style={{color:"var(--text-muted)"}}>{batch.orderId}-B{batch.batchNum}</span>
-                {batch.isLate&&<span style={{color:"#F87171",fontSize:9}}>▲</span>}
-              </div>
-            ))}
-          </div>
+          {seqPanelOpen && (
+            <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
+              {ordered.map((batch,idx) => (
+                <div key={batch.id} draggable
+                  onDragStart={()=>setDragId(batch.id)}
+                  onDragOver={e=>{e.preventDefault();setDragOver(idx);}}
+                  onDrop={()=>handleBatchDrop(idx)}
+                  onDragEnd={()=>{setDragId(null);setDragOver(null);}}
+                  style={{display:"flex",alignItems:"center",gap:4,padding:"3px 9px",borderRadius:5,
+                    background:dragId===batch.id?"rgba(245,158,11,.12)":"var(--surface-2)",
+                    border:dragOver===idx&&dragId!==batch.id?"1px solid #F59E0B":"1px solid var(--border-2)",
+                    cursor:"grab",opacity:dragId===batch.id?.4:1,fontSize:10,fontFamily:"'DM Mono',monospace",
+                    userSelect:"none",transition:"border-color .1s,opacity .1s"}}>
+                  <div style={{width:7,height:7,borderRadius:2,background:batch.color,flexShrink:0}}/>
+                  <span style={{color:"var(--text-muted)"}}>{batch.orderId}-B{batch.batchNum}</span>
+                  {batch.isLate&&<span style={{color:"#F87171",fontSize:9}}>▲</span>}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* ── Swimlanes ─────────────────────────────────────── */}
