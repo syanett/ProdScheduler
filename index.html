@@ -163,10 +163,10 @@ const INITIAL_DATA = {
         { id: "M07", name: "Cabina Pintura-A", stageId: "S5", capacityPerHour: 15 },
       ],
       skus: [
-        { id: "SKU-C01", name: "Comedor Rústico 4p",    family: "Rústico",    batchSize: 4, color: "#E07B39", unitValue: 1200000, inventory:  20, stageTimes: { S1: 45, S2: 30, S3:  90, S4: 60, S5: 40 } },
-        { id: "SKU-C02", name: "Comedor Moderno 6p",    family: "Moderno",    batchSize: 6, color: "#3A7BD5", unitValue: 1800000, inventory:  -8, stageTimes: { S1: 35, S2: 25, S3: 110, S4: 50, S5: 35 } },
-        { id: "SKU-C03", name: "Comedor Industrial 4p", family: "Industrial", batchSize: 4, color: "#6B7A8D", unitValue: 1400000, inventory:  15, stageTimes: { S1: 50, S2: 20, S3:  80, S4: 70, S5: 45 } },
-        { id: "SKU-C04", name: "Comedor Clásico 8p",    family: "Clásico",    batchSize: 8, color: "#C9A84C", unitValue: 2500000, inventory:   3, stageTimes: { S1: 60, S2: 40, S3: 130, S4: 80, S5: 55 } },
+        { id: "SKU-C01", name: "Comedor Rústico 4p",    family: "Rústico",    batchSize: 4, color: "#E07B39", unitValue: 1200000, inventory:  20, maxConsecutiveDays: 3, stageTimes: { S1: 45, S2: 30, S3:  90, S4: 60, S5: 40 } },
+        { id: "SKU-C02", name: "Comedor Moderno 6p",    family: "Moderno",    batchSize: 6, color: "#3A7BD5", unitValue: 1800000, inventory:  -8, maxConsecutiveDays: 3, stageTimes: { S1: 35, S2: 25, S3: 110, S4: 50, S5: 35 } },
+        { id: "SKU-C03", name: "Comedor Industrial 4p", family: "Industrial", batchSize: 4, color: "#6B7A8D", unitValue: 1400000, inventory:  15, maxConsecutiveDays: 3, stageTimes: { S1: 50, S2: 20, S3:  80, S4: 70, S5: 45 } },
+        { id: "SKU-C04", name: "Comedor Clásico 8p",    family: "Clásico",    batchSize: 8, color: "#C9A84C", unitValue: 2500000, inventory:   3, maxConsecutiveDays: 3, stageTimes: { S1: 60, S2: 40, S3: 130, S4: 80, S5: 55 } },
       ],
       forbiddenSequences: [
         { id: "FS1", from: "SKU-C01", to: "SKU-C03", reason: "Cambio de tinte requiere limpieza mayor (2h)" },
@@ -205,10 +205,10 @@ const INITIAL_DATA = {
         { id: "M18", name: "Estación QC",        stageId: "S6", capacityPerHour: 12 },
       ],
       skus: [
-        { id: "SKU-S01", name: "Sofá 3-cuerpos Tela", family: "Tela",    batchSize: 2, color: "#2E86AB", unitValue: 2000000, inventory:   5, stageTimes: { S1:  60, S2: 45, S3: 120, S4:  90, S5:  80, S6: 20 } },
-        { id: "SKU-S02", name: "Sofá Piel Premium",   family: "Piel",    batchSize: 1, color: "#A23B72", unitValue: 4500000, inventory:  -3, stageTimes: { S1:  90, S2: 60, S3: 180, S4: 110, S5: 120, S6: 30 } },
-        { id: "SKU-S03", name: "Loveseat Tela 2p",    family: "Tela",    batchSize: 3, color: "#48CAE4", unitValue: 1500000, inventory:   8, stageTimes: { S1:  40, S2: 30, S3:  80, S4:  60, S5:  55, S6: 15 } },
-        { id: "SKU-S04", name: "Seccional Modular",   family: "Modular", batchSize: 1, color: "#F4A261", unitValue: 5500000, inventory:   0, stageTimes: { S1: 120, S2: 80, S3: 200, S4: 150, S5: 160, S6: 40 } },
+        { id: "SKU-S01", name: "Sofá 3-cuerpos Tela", family: "Tela",    batchSize: 2, color: "#2E86AB", unitValue: 2000000, inventory:   5, maxConsecutiveDays: 3, stageTimes: { S1:  60, S2: 45, S3: 120, S4:  90, S5:  80, S6: 20 } },
+        { id: "SKU-S02", name: "Sofá Piel Premium",   family: "Piel",    batchSize: 1, color: "#A23B72", unitValue: 4500000, inventory:  -3, maxConsecutiveDays: 3, stageTimes: { S1:  90, S2: 60, S3: 180, S4: 110, S5: 120, S6: 30 } },
+        { id: "SKU-S03", name: "Loveseat Tela 2p",    family: "Tela",    batchSize: 3, color: "#48CAE4", unitValue: 1500000, inventory:   8, maxConsecutiveDays: 3, stageTimes: { S1:  40, S2: 30, S3:  80, S4:  60, S5:  55, S6: 15 } },
+        { id: "SKU-S04", name: "Seccional Modular",   family: "Modular", batchSize: 1, color: "#F4A261", unitValue: 5500000, inventory:   0, maxConsecutiveDays: 3, stageTimes: { S1: 120, S2: 80, S3: 200, S4: 150, S5: 160, S6: 40 } },
       ],
       forbiddenSequences: [
         { id: "FS1", from: "SKU-S02", to: "SKU-S01", reason: "Piel y tela no comparten herramientas sin descontaminación" },
@@ -341,8 +341,18 @@ function buildSchedule(data, heuristic, lineId, customOrder, startTimeMs, use2op
   // heuristic priority as much as possible. If no valid alternative exists,
   // the violation remains and gets reported.
   const isForbidden = (fromSkuId, toSkuId) => {
-    if (!fromSkuId || fromSkuId === toSkuId) return false;
-    return !!line.forbiddenSequences?.find(f => f.from === fromSkuId && f.to === toSkuId);
+    if (!fromSkuId || !toSkuId) return false;
+    if (fromSkuId === toSkuId) return false;
+    const fromSku = line.skus.find(s => s.id === fromSkuId);
+    const toSku   = line.skus.find(s => s.id === toSkuId);
+    return !!(line.forbiddenSequences || []).find(f => {
+      // Mode "family": match by family name
+      if (f.mode === "family") {
+        return fromSku && toSku && fromSku.family === f.from && toSku.family === f.to;
+      }
+      // Mode "sku" (default): exact match
+      return f.from === fromSkuId && f.to === toSkuId;
+    });
   };
   // Build set of SKU-pairs that priority rules require (from must be before before)
   const priRules = line.priorityRules || [];
@@ -464,7 +474,97 @@ function buildSchedule(data, heuristic, lineId, customOrder, startTimeMs, use2op
       if (isBack && seenNonBacklog) return false;
       if (!isBack) seenNonBacklog = true;
     }
+    // Max consecutive days constraint: count batches of same SKU in a run
+    // and ensure no run exceeds the SKU's maxConsecutiveDays × batchesPerDay (default ~5 per day).
+    // Conservative proxy: limit consecutive batches of same SKU to maxConsecutiveDays * 5.
+    const skuByIdMap = Object.fromEntries(line.skus.map(s => [s.id, s]));
+    let runLen = 0, runSkuId = null;
+    for (const b of seq) {
+      if (b.skuId === runSkuId) {
+        runLen++;
+      } else {
+        runSkuId = b.skuId;
+        runLen = 1;
+      }
+      const sk = skuByIdMap[runSkuId];
+      const maxDays = (sk && typeof sk.maxConsecutiveDays === "number" && sk.maxConsecutiveDays > 0) ? sk.maxConsecutiveDays : 3;
+      // Estimate batches-per-day: use sku.maxBatchesPerDay if defined (Phase 2 forward-compat),
+      // otherwise default to 5 batches per day as a reasonable proxy.
+      const batchesPerDay = (sk && typeof sk.maxBatchesPerDay === "number" && sk.maxBatchesPerDay > 0) ? sk.maxBatchesPerDay : 5;
+      if (runLen > maxDays * batchesPerDay) return false;
+    }
     return true;
+  }
+
+  // --- MAX-CONSECUTIVE-DAYS ENFORCEMENT (post-resequencing) ---
+  // After the look-ahead resequencing, detect runs that violate maxConsecutiveDays and
+  // attempt to break them up by swapping the offending batch with a non-violating one
+  // further along in the queue.
+  if (!co && batches.length >= 2) {
+    const skuByIdMap = Object.fromEntries(line.skus.map(s => [s.id, s]));
+    const broken = [];
+    let pass = 0, maxPasses = 3, anyBreak = true;
+    while (anyBreak && pass < maxPasses) {
+      anyBreak = false;
+      pass++;
+      let runLen = 0, runSkuId = null;
+      for (let i = 0; i < batches.length; i++) {
+        const b = batches[i];
+        if (b.skuId === runSkuId) {
+          runLen++;
+        } else {
+          runSkuId = b.skuId;
+          runLen = 1;
+        }
+        const sk = skuByIdMap[runSkuId];
+        const maxDays = (sk && typeof sk.maxConsecutiveDays === "number" && sk.maxConsecutiveDays > 0) ? sk.maxConsecutiveDays : 3;
+        const batchesPerDay = (sk && typeof sk.maxBatchesPerDay === "number" && sk.maxBatchesPerDay > 0) ? sk.maxBatchesPerDay : 5;
+        const limit = maxDays * batchesPerDay;
+        if (runLen > limit) {
+          // Find a batch further along with a different SKU to swap in here
+          let swapIdx = -1;
+          for (let j = i + 1; j < batches.length; j++) {
+            if (batches[j].skuId !== runSkuId) {
+              // Try swap and validate
+              const candidate = batches.slice();
+              [candidate[i], candidate[j]] = [candidate[j], candidate[i]];
+              // Lightweight checks: forbidden + priority (not full isValidSequence which would recurse)
+              let ok = true;
+              for (let k = 1; k < candidate.length && ok; k++) {
+                if (candidate[k-1].skuId !== candidate[k].skuId && isForbidden(candidate[k-1].skuId, candidate[k].skuId)) ok = false;
+              }
+              if (ok) {
+                for (const rule of priRules) {
+                  if (!rule.from || !rule.before || rule.from === rule.before) continue;
+                  const fIdx = candidate.findIndex(bb => bb.skuId === rule.from);
+                  const bIdx = candidate.findIndex(bb => bb.skuId === rule.before);
+                  if (fIdx >= 0 && bIdx >= 0 && fIdx > bIdx) { ok = false; break; }
+                }
+              }
+              if (ok) { swapIdx = j; break; }
+            }
+          }
+          if (swapIdx > 0) {
+            [batches[i], batches[swapIdx]] = [batches[swapIdx], batches[i]];
+            anyBreak = true;
+            broken.push({ skuId: runSkuId, originalIdx: i });
+            // Reset run tracking from this position
+            runSkuId = batches[i].skuId; runLen = 1;
+          } else {
+            // Cannot break: record as unavoidable violation
+            const skName = sk?.name || runSkuId;
+            const existing = violations.find(v => v.message && v.message.includes(`${skName}: máx`));
+            if (!existing) {
+              violations.push({ batchId: b.id, message: `${skName}: máx ${maxDays} días consecutivos excedido (no se puede reordenar sin violar otras reglas)` });
+            }
+            runSkuId = batches[i].skuId; runLen = 1;
+          }
+        }
+      }
+    }
+    if (broken.length > 0) {
+      violations.unshift({ batchId: null, message: `🔄 ${broken.length} reordenamiento(s) por máx. días consecutivos`, _isInfo: true });
+    }
   }
 
   // --- 2-OPT LOCAL SEARCH (post-heuristic optimization) ---
@@ -515,8 +615,18 @@ function buildSchedule(data, heuristic, lineId, customOrder, startTimeMs, use2op
   // --- violation detection (after final ordering) ---
   for (let i = 1; i < batches.length; i++) {
     if (batches[i-1].skuId !== batches[i].skuId) {
-      const f = line.forbiddenSequences.find(fs => fs.from === batches[i-1].skuId && fs.to === batches[i].skuId);
-      if (f) violations.push({ batchId: batches[i].id, message: `Secuencia prohibida: ${batches[i-1].skuName} → ${batches[i].skuName}. ${f.reason}` });
+      const fromSku = line.skus.find(s => s.id === batches[i-1].skuId);
+      const toSku   = line.skus.find(s => s.id === batches[i].skuId);
+      const f = (line.forbiddenSequences || []).find(fs => {
+        if (fs.mode === "family") {
+          return fromSku && toSku && fromSku.family === fs.from && toSku.family === fs.to;
+        }
+        return fs.from === batches[i-1].skuId && fs.to === batches[i].skuId;
+      });
+      if (f) {
+        const modeTag = f.mode === "family" ? `[Fam: ${f.from} → ${f.to}] ` : "";
+        violations.push({ batchId: batches[i].id, message: `${modeTag}Secuencia prohibida: ${batches[i-1].skuName} → ${batches[i].skuName}. ${f.reason}` });
+      }
     }
   }
 
@@ -954,6 +1064,10 @@ function App() {
 
   // ─── Horizonte de facturación ─────────────────────────────────
   const [showHorizonModal, setShowHorizonModal] = useState(false);
+  const [showCleanGoalsModal, setShowCleanGoalsModal] = useState(false);
+  const [cleanStart, setCleanStart] = useState("");
+  const [cleanEnd, setCleanEnd] = useState("");
+  const [cleanScope, setCleanScope] = useState("range"); // 'range' | 'line' | 'all'
   const [horizonStart, setHorizonStart] = useState(() => {
     const t = new Date(); return t.toISOString().slice(0,10);
   });
@@ -1295,6 +1409,30 @@ function App() {
     if(d.dailyGoals?.[lid]?.[date] !== undefined) delete d.dailyGoals[lid][date];
   }),[mutate]);
 
+  // Clear all goals for a line within a date range (inclusive)
+  // If startDate/endDate are null, clears ALL goals for the line.
+  const handleClearGoalsRange = useCallback((lid, startDate, endDate) => mutate(d => {
+    if (!d.dailyGoals?.[lid]) return;
+    if (!startDate && !endDate) {
+      // Clear all goals for this line
+      d.dailyGoals[lid] = {};
+      return;
+    }
+    const goals = d.dailyGoals[lid];
+    Object.keys(goals).forEach(k => {
+      if ((!startDate || k >= startDate) && (!endDate || k <= endDate)) {
+        delete goals[k];
+      }
+    });
+  }), [mutate]);
+
+  // Hard reset: clear ALL goals across ALL lines + reset billingGoal
+  const handleHardResetGoals = useCallback(() => mutate(d => {
+    d.dailyGoals = {};
+    // Note: billingGoal preserved by default. Uncomment to also reset:
+    // d.billingGoal = 0;
+  }), [mutate]);
+
   // ─── CRUD: Priority Rules ─────────────────────────────────────
   const handleUpdatePriorityRule = useCallback((lid, rid, field, val) => {
     mutate(d => {
@@ -1331,6 +1469,30 @@ function App() {
       const n = parseInt(val);
       d.lines[li].skus[si].inventory = isNaN(n) ? 0 : n;
     }
+  }), [mutate]);
+
+  // Update maxConsecutiveDays for a single SKU
+  const handleUpdateMaxDays = useCallback((lid, sid, val) => mutate(d => {
+    const li = d.lines.findIndex(l => l.id === lid);
+    const si = d.lines[li].skus.findIndex(s => s.id === sid);
+    if (si >= 0) {
+      const n = parseInt(val);
+      d.lines[li].skus[si].maxConsecutiveDays = isNaN(n) || n < 1 ? 3 : n;
+    }
+  }), [mutate]);
+
+  // Apply maxConsecutiveDays of a SKU to all SKUs in the same family
+  const handleApplyMaxDaysToFamily = useCallback((lid, sid) => mutate(d => {
+    const li = d.lines.findIndex(l => l.id === lid);
+    if (li < 0) return;
+    const src = d.lines[li].skus.find(s => s.id === sid);
+    if (!src || !src.family) return;
+    const val = typeof src.maxConsecutiveDays === "number" ? src.maxConsecutiveDays : 3;
+    let count = 0;
+    d.lines[li].skus.forEach(s => {
+      if (s.family === src.family) { s.maxConsecutiveDays = val; count++; }
+    });
+    setTimeout(() => alert(`✓ Aplicado "máx ${val} días consecutivos" a ${count} SKU(s) de la familia "${src.family}"`), 50);
   }), [mutate]);
 
   // ─── CRUD: Stages ─────────────────────────────────────────────
@@ -1418,14 +1580,35 @@ function App() {
     });
     setCustomOrder(p => ({ ...p, [lid]: null }));
   }, [mutate]);
-  const handleAddForbidden = useCallback(lid => {
+  const handleAddForbidden = useCallback((lid, mode = "sku") => {
     mutate(d => {
       const li = d.lines.findIndex(l => l.id === lid);
+      if (li < 0) return;
       const skus = d.lines[li].skus;
-      if (skus.length < 2) return;
-      d.lines[li].forbiddenSequences.push({ id: "FS" + (Date.now()%100000), from: skus[0].id, to: skus[1].id, reason: "Sin descripción" });
+      if (mode === "family") {
+        const families = [...new Set(skus.map(s => s.family).filter(Boolean))];
+        if (families.length < 2) {
+          setTimeout(() => alert("Necesitas al menos 2 familias distintas entre los SKUs para crear una regla por familia."), 50);
+          return;
+        }
+        d.lines[li].forbiddenSequences.push({
+          id: "FS" + (Date.now()%100000),
+          mode: "family",
+          from: families[0],
+          to: families[1],
+          reason: "Sin descripción"
+        });
+      } else {
+        if (skus.length < 2) return;
+        d.lines[li].forbiddenSequences.push({
+          id: "FS" + (Date.now()%100000),
+          mode: "sku",
+          from: skus[0].id,
+          to: skus[1].id,
+          reason: "Sin descripción"
+        });
+      }
     });
-    // Clear custom order so the new rule takes effect immediately
     setCustomOrder(p => ({ ...p, [lid]: null }));
   }, [mutate]);
   const handleRemoveForbidden = useCallback((lid, fid) => {
@@ -2479,6 +2662,7 @@ Responde en español.`;
           </div>
           <div style={{display:"flex",gap:10,alignItems:"flex-start",flexWrap:"wrap"}}>
             <button onClick={()=>setShowHorizonModal(true)} style={{padding:"7px 14px",borderRadius:7,background:"rgba(245,158,11,.1)",border:"1px solid rgba(245,158,11,.3)",color:"#F59E0B",cursor:"pointer",fontSize:11,fontFamily:"'DM Mono',monospace",height:"fit-content"}}>📅 Elegir horizonte</button>
+            <button onClick={()=>{setCleanStart(horizonStart);setCleanEnd(horizonEnd);setCleanScope("range");setShowCleanGoalsModal(true);}} style={{padding:"7px 14px",borderRadius:7,background:"rgba(248,113,113,.08)",border:"1px solid rgba(248,113,113,.25)",color:"#F87171",cursor:"pointer",fontSize:11,fontFamily:"'DM Mono',monospace",height:"fit-content"}} title="Eliminar metas en bloque">🗑 Limpiar metas</button>
             <div style={{textAlign:"right",padding:"8px 14px",background:"var(--surface)",borderRadius:8,border:"1px solid var(--border)"}}>
               <div style={{fontSize:9,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em"}}>Meta Mensual (COP)</div>
               <div style={{fontSize:18,fontWeight:700,fontFamily:"'Syne',sans-serif",color:"#34D399",lineHeight:1.1,marginBottom:4}}>${data.billingGoal.toLocaleString("es-CO")}</div>
@@ -2670,10 +2854,11 @@ Responde en español.`;
             {line.skus.length===0 ? <div style={{textAlign:"center",padding:"30px",color:"var(--text-dim)",fontSize:13,background:"var(--surface)",borderRadius:8,border:"1px dashed var(--border)"}}>{line.stages.length?"Sin SKUs. Agrega el primero.":"Define etapas antes de agregar SKUs."}</div> : (
             <div style={{overflowX:"auto"}}>
               <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-                <thead><tr>{["Color","ID","Nombre","Familia","Lote","Valor unit. (COP)","Inventario"].concat(line.stages.sort((a,b)=>a.order-b.order).map(s=>s.name+" (min)")).concat([""]).map(h=><th key={h} style={{textAlign:"left",fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"7px 8px",borderBottom:"1px solid var(--border)",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
+                <thead><tr>{["Color","ID","Nombre","Familia","Lote","Valor unit. (COP)","Inventario","Máx. días"].concat(line.stages.sort((a,b)=>a.order-b.order).map(s=>s.name+" (min)")).concat([""]).map(h=><th key={h} style={{textAlign:"left",fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"7px 8px",borderBottom:"1px solid var(--border)",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
                 <tbody>{line.skus.map(sku=>{
                   const inv = typeof sku.inventory === "number" ? sku.inventory : 0;
                   const backlog = inv < 0;
+                  const maxDays = typeof sku.maxConsecutiveDays === "number" ? sku.maxConsecutiveDays : 3;
                   return (
                   <tr key={sku.id} style={{borderBottom:"1px solid var(--surface)",background:backlog?"rgba(248,113,113,.04)":"transparent"}}>
                     <td style={{padding:"7px 8px"}} title="Color asignado automáticamente"><div style={{width:24,height:18,borderRadius:4,background:sku.color,border:"1px solid var(--border)"}}/></td>
@@ -2683,6 +2868,14 @@ Responde en español.`;
                     <td style={{padding:"7px 8px"}}><NumberInput value={sku.batchSize} onCommit={v=>handleUpdateSku(activeLine,sku.id,"batchSize",v)} min={1} step={1} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:54}}/></td>
                     <td style={{padding:"7px 8px"}}><div style={{display:"flex",alignItems:"center",gap:3}}><span style={{color:"#34D399",fontSize:11,fontFamily:"'DM Mono',monospace"}}>$</span><NumberInput value={sku.unitValue||0} onCommit={v=>handleUpdateSku(activeLine,sku.id,"unitValue",v)} min={0} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"#34D399",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:110}} title="Valor por unidad en COP."/></div></td>
                     <td style={{padding:"7px 8px"}}><NumberInput value={inv} onCommit={v=>handleUpdateInventory(activeLine,sku.id,v)} step={1} allowNegative={true} style={{background:"var(--surface)",border:"1px solid "+(backlog?"rgba(248,113,113,.4)":"var(--border)"),color:backlog?"#F87171":"var(--text)",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:72,fontWeight:backlog?700:400}} title={backlog?"⚠ Backlog: el SKU se programa primero, ignorando heurística":"Inventario inicial. Negativo = backlog (cliente final pendiente)."}/></td>
+                    <td style={{padding:"7px 8px"}}>
+                      <div style={{display:"flex",alignItems:"center",gap:4}}>
+                        <NumberInput value={maxDays} onCommit={v=>handleUpdateMaxDays(activeLine,sku.id,v)} min={1} step={1} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"#38BDF8",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:46,fontWeight:600}} title="Máximo de días productivos consecutivos para este SKU. Default: 3."/>
+                        {sku.family && (
+                          <button onClick={()=>handleApplyMaxDaysToFamily(activeLine,sku.id)} title={`Aplicar ${maxDays} días a toda la familia "${sku.family}"`} style={{padding:"2px 5px",fontSize:9,borderRadius:3,background:"transparent",border:"1px solid var(--border-2)",color:"var(--text-dim)",cursor:"pointer",fontFamily:"'DM Mono',monospace"}}>↪Fam</button>
+                        )}
+                      </div>
+                    </td>
                     {line.stages.sort((a,b)=>a.order-b.order).map(s=>(
                       <td key={s.id} style={{padding:"7px 8px"}}>
                         <NumberInput value={sku.stageTimes?.[s.id]||0} onCommit={v=>handleUpdateSkuStageTime(activeLine,sku.id,s.id,v)} min={0} step={1} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:54}}/>
@@ -2697,31 +2890,67 @@ Responde en español.`;
           </div>
         )}
 
-        {activeConfigTab==="forbidden"&&(
+        {activeConfigTab==="forbidden"&&(() => {
+          const families = [...new Set(line.skus.map(s => s.family).filter(Boolean))];
+          return (
           <div>
-            <div style={{fontSize:12,color:"var(--text-dim)",background:"var(--surface)",borderRadius:7,padding:"10px 14px",marginBottom:12,lineHeight:1.6}}>El SKU "Después" no puede programarse inmediatamente después del SKU "Antes" en la misma línea.</div>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-              <div style={{fontSize:11,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em"}}>{line.forbiddenSequences.length} reglas activas</div>
-              <button onClick={()=>handleAddForbidden(activeLine)} disabled={line.skus.length<2} style={{fontSize:11,padding:"5px 12px",borderRadius:5,background:"rgba(245,158,11,.1)",border:"1px solid rgba(245,158,11,.3)",color:"#F59E0B",cursor:line.skus.length>=2?"pointer":"not-allowed",opacity:line.skus.length>=2?1:.4,fontFamily:"'DM Mono',monospace"}}>+ Agregar regla</button>
+            <div style={{fontSize:12,color:"var(--text-dim)",background:"var(--surface)",borderRadius:7,padding:"10px 14px",marginBottom:12,lineHeight:1.6}}>
+              El SKU/familia "Después" no puede programarse inmediatamente después del SKU/familia "Antes". <strong style={{color:"#38BDF8"}}>Modo familia</strong>: aplica a TODOS los SKUs de la familia, sin importar cuántos sean.
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,gap:8,flexWrap:"wrap"}}>
+              <div style={{fontSize:11,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em"}}>
+                {line.forbiddenSequences.length} reglas activas
+                {line.forbiddenSequences.filter(f=>f.mode==="family").length > 0 && (
+                  <span style={{marginLeft:8,color:"#38BDF8"}}>· {line.forbiddenSequences.filter(f=>f.mode==="family").length} por familia</span>
+                )}
+              </div>
+              <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                <button onClick={()=>handleAddForbidden(activeLine,"sku")} disabled={line.skus.length<2} style={{fontSize:11,padding:"5px 12px",borderRadius:5,background:"rgba(245,158,11,.1)",border:"1px solid rgba(245,158,11,.3)",color:"#F59E0B",cursor:line.skus.length>=2?"pointer":"not-allowed",opacity:line.skus.length>=2?1:.4,fontFamily:"'DM Mono',monospace"}}>+ Por SKU</button>
+                <button onClick={()=>handleAddForbidden(activeLine,"family")} disabled={families.length<2} title={families.length<2?"Necesitas al menos 2 familias distintas":""} style={{fontSize:11,padding:"5px 12px",borderRadius:5,background:"rgba(56,189,248,.1)",border:"1px solid rgba(56,189,248,.3)",color:"#38BDF8",cursor:families.length>=2?"pointer":"not-allowed",opacity:families.length>=2?1:.4,fontFamily:"'DM Mono',monospace"}}>+ Por Familia</button>
+              </div>
             </div>
             {line.forbiddenSequences.length===0
               ?<div style={{textAlign:"center",padding:"30px",color:"var(--text-dim)",fontSize:13,background:"var(--surface)",borderRadius:8,border:"1px dashed var(--border)"}}>{line.skus.length>=2?"Sin rutas prohibidas. Agrega la primera regla.":"Necesitas al menos 2 SKUs para definir reglas."}</div>
               :<table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-                <thead><tr>{["ID","Antes →","Después","Razón",""].map(h=><th key={h} style={{textAlign:"left",fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"7px 10px",borderBottom:"1px solid var(--border)"}}>{h}</th>)}</tr></thead>
+                <thead><tr>{["ID","Modo","Antes →","Después","Razón",""].map(h=><th key={h} style={{textAlign:"left",fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"7px 10px",borderBottom:"1px solid var(--border)"}}>{h}</th>)}</tr></thead>
                 <tbody>{line.forbiddenSequences.map(f=>{
-                  const fs=line.skus.find(s=>s.id===f.from),ts=line.skus.find(s=>s.id===f.to);
-                  return (<tr key={f.id} style={{borderBottom:"1px solid var(--surface)"}}>
+                  const isFam = f.mode === "family";
+                  const fs = isFam ? null : line.skus.find(s=>s.id===f.from);
+                  const ts = isFam ? null : line.skus.find(s=>s.id===f.to);
+                  const fromCount = isFam ? line.skus.filter(s=>s.family===f.from).length : 0;
+                  const toCount   = isFam ? line.skus.filter(s=>s.family===f.to).length   : 0;
+                  return (<tr key={f.id} style={{borderBottom:"1px solid var(--surface)",background:isFam?"rgba(56,189,248,.04)":"transparent"}}>
                     <td style={{padding:"7px 10px",fontFamily:"'DM Mono',monospace",fontSize:11,color:"var(--text-dim)"}}>{f.id}</td>
                     <td style={{padding:"7px 10px"}}>
+                      <span style={{padding:"2px 6px",borderRadius:4,fontSize:9,fontWeight:600,fontFamily:"'DM Mono',monospace",
+                        background: isFam?"rgba(56,189,248,.12)":"rgba(245,158,11,.12)",
+                        color: isFam?"#38BDF8":"#F59E0B",
+                        border: "1px solid "+(isFam?"rgba(56,189,248,.3)":"rgba(245,158,11,.3)")}}>
+                        {isFam?"FAMILIA":"SKU"}
+                      </span>
+                    </td>
+                    <td style={{padding:"7px 10px"}}>
                       <div style={{display:"flex",alignItems:"center",gap:6}}>
-                        <span style={{display:"inline-block",width:8,height:8,borderRadius:2,background:fs?.color||"var(--border-2)"}}/>
-                        <select value={f.from} onChange={e=>handleUpdateForbidden(activeLine,f.id,"from",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontSize:11,outline:"none",minWidth:140,fontFamily:"'DM Mono',monospace"}}>{line.skus.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select>
+                        {!isFam && <span style={{display:"inline-block",width:8,height:8,borderRadius:2,background:fs?.color||"var(--border-2)"}}/>}
+                        <select value={f.from} onChange={e=>handleUpdateForbidden(activeLine,f.id,"from",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontSize:11,outline:"none",minWidth:140,fontFamily:"'DM Mono',monospace"}}>
+                          {isFam
+                            ? families.map(fam => <option key={fam} value={fam}>{fam}</option>)
+                            : line.skus.map(s => <option key={s.id} value={s.id}>{s.name}</option>)
+                          }
+                        </select>
+                        {isFam && <span style={{fontSize:9,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace"}}>({fromCount} SKUs)</span>}
                       </div>
                     </td>
                     <td style={{padding:"7px 10px"}}>
                       <div style={{display:"flex",alignItems:"center",gap:6}}>
-                        <span style={{display:"inline-block",width:8,height:8,borderRadius:2,background:ts?.color||"var(--border-2)"}}/>
-                        <select value={f.to} onChange={e=>handleUpdateForbidden(activeLine,f.id,"to",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontSize:11,outline:"none",minWidth:140,fontFamily:"'DM Mono',monospace"}}>{line.skus.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select>
+                        {!isFam && <span style={{display:"inline-block",width:8,height:8,borderRadius:2,background:ts?.color||"var(--border-2)"}}/>}
+                        <select value={f.to} onChange={e=>handleUpdateForbidden(activeLine,f.id,"to",e.target.value)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontSize:11,outline:"none",minWidth:140,fontFamily:"'DM Mono',monospace"}}>
+                          {isFam
+                            ? families.map(fam => <option key={fam} value={fam}>{fam}</option>)
+                            : line.skus.map(s => <option key={s.id} value={s.id}>{s.name}</option>)
+                          }
+                        </select>
+                        {isFam && <span style={{fontSize:9,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace"}}>({toCount} SKUs)</span>}
                       </div>
                     </td>
                     <td style={{padding:"7px 10px"}}><TextInput value={f.reason} onCommit={v=>handleUpdateForbidden(activeLine,f.id,"reason",v)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontSize:11,outline:"none",width:"100%",minWidth:240}}/></td>
@@ -2731,7 +2960,8 @@ Responde en español.`;
               </table>
             }
           </div>
-        )}
+          );
+        })()}
 
         {activeConfigTab==="priorities"&&(
           <div>
@@ -3135,6 +3365,91 @@ Responde en español.`;
               <div style={{display:"flex",gap:10,justifyContent:"flex-end"}}>
                 <button onClick={()=>setShowHorizonModal(false)} style={{padding:"7px 16px",borderRadius:5,background:"transparent",border:"1px solid var(--border-2)",color:"var(--text-muted)",cursor:"pointer",fontSize:12,fontFamily:"'DM Mono',monospace"}}>Cancelar</button>
                 <button onClick={handleApplyHorizon} disabled={modalProdDays===0} style={{padding:"7px 16px",borderRadius:5,background:"rgba(245,158,11,.15)",border:"1px solid rgba(245,158,11,.3)",color:"#F59E0B",cursor:modalProdDays===0?"not-allowed":"pointer",opacity:modalProdDays===0?.4:1,fontSize:12,fontFamily:"'DM Mono',monospace"}}>Generar metas</button>
+              </div>
+            </div>
+          </div>
+          );
+        })()}
+
+        {showCleanGoalsModal && (() => {
+          const goalsForActive = data.dailyGoals?.[activeLine] || {};
+          const allGoalsForActive = Object.keys(goalsForActive);
+          let toDelete = 0, scopeDescription = "";
+          if (cleanScope === "range") {
+            toDelete = allGoalsForActive.filter(k => (!cleanStart || k >= cleanStart) && (!cleanEnd || k <= cleanEnd)).length;
+            scopeDescription = `en ${line?.name} entre ${cleanStart || "inicio"} y ${cleanEnd || "fin"}`;
+          } else if (cleanScope === "line") {
+            toDelete = allGoalsForActive.length;
+            scopeDescription = `todas en ${line?.name}`;
+          } else {
+            toDelete = data.lines.reduce((s,l) => s + Object.keys(data.dailyGoals?.[l.id] || {}).length, 0);
+            scopeDescription = `TODAS de TODAS las líneas`;
+          }
+          const apply = () => {
+            if (cleanScope === "range") {
+              handleClearGoalsRange(activeLine, cleanStart || null, cleanEnd || null);
+            } else if (cleanScope === "line") {
+              handleClearGoalsRange(activeLine, null, null);
+            } else {
+              handleHardResetGoals();
+            }
+            setShowCleanGoalsModal(false);
+            setTimeout(() => alert(`✓ ${toDelete} meta(s) eliminada(s)`), 50);
+          };
+          return (
+          <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.7)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}} onClick={()=>setShowCleanGoalsModal(false)}>
+            <div onClick={e=>e.stopPropagation()} style={{background:"var(--surface-2)",border:"1px solid var(--border-2)",borderRadius:10,padding:24,maxWidth:520,width:"90%",boxShadow:"0 20px 60px rgba(0,0,0,.5)"}}>
+              <div style={{fontSize:16,fontWeight:600,marginBottom:6,color:"#F87171"}}>🗑 Limpiar metas</div>
+              <div style={{fontSize:12,color:"var(--text-muted)",lineHeight:1.5,marginBottom:18}}>
+                Elimina metas de facturación en bloque. Esta acción no se puede deshacer (próximamente: papelera con undo).
+              </div>
+
+              {/* Scope selector */}
+              <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:14}}>
+                {[
+                  ["range", "📅 Por rango de fechas", `Elimina solo metas dentro de un rango en ${line?.name}`],
+                  ["line",  "📋 Toda la línea actual", `Borra TODAS las metas de ${line?.name}`],
+                  ["all",   "🔥 Hard Reset Global",    "Borra TODAS las metas de TODAS las líneas"]
+                ].map(([id, lbl, desc]) => (
+                  <label key={id} style={{display:"flex",alignItems:"flex-start",gap:8,padding:"9px 12px",borderRadius:6,cursor:"pointer",
+                    background: cleanScope===id ? "var(--surface)" : "transparent",
+                    border: "1px solid " + (cleanScope===id ? (id==="all"?"rgba(248,113,113,.4)":"var(--border-2)") : "var(--border)")}}>
+                    <input type="radio" name="cleanScope" value={id} checked={cleanScope===id} onChange={e=>setCleanScope(e.target.value)} style={{marginTop:2,accentColor:id==="all"?"#F87171":"#F59E0B"}}/>
+                    <div>
+                      <div style={{fontSize:12,fontWeight:600,color: id==="all" ? "#F87171" : "var(--text)"}}>{lbl}</div>
+                      <div style={{fontSize:10,color:"var(--text-dim)",marginTop:2,fontFamily:"'DM Mono',monospace"}}>{desc}</div>
+                    </div>
+                  </label>
+                ))}
+              </div>
+
+              {/* Date inputs (only for range mode) */}
+              {cleanScope === "range" && (
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:14}}>
+                  <div>
+                    <div style={{fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",marginBottom:4}}>Desde</div>
+                    <input type="date" value={cleanStart} onChange={e=>setCleanStart(e.target.value)} style={{width:"100%",background:"var(--surface)",border:"1px solid var(--border-2)",color:"var(--text)",padding:"7px 10px",borderRadius:5,fontFamily:"'DM Mono',monospace",fontSize:12,outline:"none",colorScheme:themeMode==="dark"?"dark":"light"}}/>
+                  </div>
+                  <div>
+                    <div style={{fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",marginBottom:4}}>Hasta</div>
+                    <input type="date" value={cleanEnd} onChange={e=>setCleanEnd(e.target.value)} style={{width:"100%",background:"var(--surface)",border:"1px solid var(--border-2)",color:"var(--text)",padding:"7px 10px",borderRadius:5,fontFamily:"'DM Mono',monospace",fontSize:12,outline:"none",colorScheme:themeMode==="dark"?"dark":"light"}}/>
+                  </div>
+                </div>
+              )}
+
+              {/* Preview */}
+              <div style={{padding:"10px 14px",background:cleanScope==="all"?"rgba(248,113,113,.08)":"rgba(245,158,11,.06)",border:"1px solid "+(cleanScope==="all"?"rgba(248,113,113,.3)":"rgba(245,158,11,.25)"),borderRadius:6,marginBottom:18}}>
+                <div style={{fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",marginBottom:4}}>Preview</div>
+                <div style={{fontSize:13,color:cleanScope==="all"?"#F87171":"#F59E0B",fontWeight:700,fontFamily:"'DM Mono',monospace"}}>
+                  Se eliminarán {toDelete} meta(s) · {scopeDescription}
+                </div>
+              </div>
+
+              <div style={{display:"flex",gap:10,justifyContent:"flex-end"}}>
+                <button onClick={()=>setShowCleanGoalsModal(false)} style={{padding:"7px 16px",borderRadius:5,background:"transparent",border:"1px solid var(--border-2)",color:"var(--text-muted)",cursor:"pointer",fontSize:12,fontFamily:"'DM Mono',monospace"}}>Cancelar</button>
+                <button onClick={apply} disabled={toDelete===0} style={{padding:"7px 16px",borderRadius:5,background:cleanScope==="all"?"rgba(248,113,113,.15)":"rgba(245,158,11,.15)",border:"1px solid "+(cleanScope==="all"?"rgba(248,113,113,.4)":"rgba(245,158,11,.3)"),color:cleanScope==="all"?"#F87171":"#F59E0B",cursor:toDelete>0?"pointer":"not-allowed",opacity:toDelete>0?1:.35,fontSize:12,fontFamily:"'DM Mono',monospace",fontWeight:600}}>
+                  {cleanScope==="all"?"🔥 Confirmar Hard Reset":"Eliminar metas"}
+                </button>
               </div>
             </div>
           </div>
