@@ -76,6 +76,114 @@ function isProductiveDay(date, workingDays, dateOverrides) {
   return wd.includes(date.getDay());
 }
 
+// Returns the ordered list of stages that the given SKU goes through.
+// Precedence: SKU.customRoute > Family.customRoute > Default (all line.stages sorted by .order).
+// A custom route is an array of stage IDs; only IDs that exist in line.stages are kept,
+// preserving the custom order. This NEVER adds stages that aren't in line.stages.
+function getStagesForSku(sku, line) {
+  const allStagesById = Object.fromEntries((line.stages || []).map(s => [s.id, s]));
+  // SKU-level custom route
+  if (sku && Array.isArray(sku.customRoute) && sku.customRoute.length > 0) {
+    return sku.customRoute.map(id => allStagesById[id]).filter(Boolean);
+  }
+  // Family-level custom route (looked up in line.familyRoutes)
+  if (sku && sku.family && line.familyRoutes && Array.isArray(line.familyRoutes[sku.family]) && line.familyRoutes[sku.family].length > 0) {
+    return line.familyRoutes[sku.family].map(id => allStagesById[id]).filter(Boolean);
+  }
+  // Default: all stages in order
+  return (line.stages || []).slice().sort((a,b) => a.order - b.order);
+}
+
+// Topologically sort stages by their `prerequisites` field.
+// Each stage may have `prerequisites: [stageId, ...]` listing stages that must finish before it.
+//
+// UNIFIED BEHAVIOR (Phase 3+):
+//   - If ANY stage in the route declares prerequisites, the WHOLE route is ordered by topo sort.
+//     Stages without `prerequisites` are treated as "no dependencies" → they start in parallel
+//     at level 0 (with each other and with any stage whose prereqs are absent from the route).
+//   - `stage.order` is used ONLY as a stable tie-breaker within the same topological level
+//     (visual stability; doesn't affect dependencies).
+//   - If NO stage declares prerequisites, falls back to pure `stage.order` (legacy behavior).
+// Returns: { ordered: [stage,...], cycleDetected: bool, prereqMap: { stageId: [prereqStageId,...] } }
+// Stages in the input `routeStages` are the only ones considered (custom routes are honored).
+function topoSortStages(routeStages, allStages) {
+  const allById = Object.fromEntries((allStages || []).map(s => [s.id, s]));
+  const inputIds = new Set(routeStages.map(s => s.id));
+  // Build prereqMap restricted to stages present in the route (ignore prereqs that aren't in this route)
+  const prereqMap = {};
+  routeStages.forEach(s => {
+    const orig = allById[s.id] || s;
+    const raw = Array.isArray(orig.prerequisites) ? orig.prerequisites : [];
+    prereqMap[s.id] = raw.filter(pid => inputIds.has(pid) && pid !== s.id);
+  });
+  // Check if any stage has explicit prereqs
+  const anyExplicit = Object.values(prereqMap).some(arr => arr.length > 0);
+  if (!anyExplicit) {
+    // Legacy behavior: use stage.order
+    return { ordered: routeStages.slice().sort((a,b) => (a.order||0) - (b.order||0)), cycleDetected: false, prereqMap };
+  }
+  // Kahn's algorithm with stable secondary ordering by stage.order
+  const indeg = {};
+  routeStages.forEach(s => { indeg[s.id] = prereqMap[s.id].length; });
+  // Adjacency: child of P is anyone whose prereq list contains P
+  const children = {};
+  routeStages.forEach(s => { children[s.id] = []; });
+  routeStages.forEach(s => {
+    prereqMap[s.id].forEach(pid => { if (children[pid]) children[pid].push(s.id); });
+  });
+  const ordered = [];
+  const ready = routeStages
+    .filter(s => indeg[s.id] === 0)
+    .sort((a,b) => (a.order||0) - (b.order||0))
+    .map(s => s.id);
+  while (ready.length) {
+    const id = ready.shift();
+    const stage = routeStages.find(s => s.id === id);
+    if (stage) ordered.push(stage);
+    children[id].forEach(childId => {
+      indeg[childId]--;
+      if (indeg[childId] === 0) {
+        // Insert keeping sort by .order
+        const stOrder = (routeStages.find(s => s.id === childId)?.order) || 0;
+        let inserted = false;
+        for (let i = 0; i < ready.length; i++) {
+          const cur = routeStages.find(s => s.id === ready[i]);
+          if ((cur?.order || 0) > stOrder) { ready.splice(i, 0, childId); inserted = true; break; }
+        }
+        if (!inserted) ready.push(childId);
+      }
+    });
+  }
+  const cycleDetected = ordered.length !== routeStages.length;
+  if (cycleDetected) {
+    // Fall back to .order ordering and report cycle
+    return { ordered: routeStages.slice().sort((a,b) => (a.order||0) - (b.order||0)), cycleDetected: true, prereqMap };
+  }
+  return { ordered, cycleDetected: false, prereqMap };
+}
+
+// Validate that adding `prereqId` as prerequisite of `stageId` does NOT create a cycle.
+// Returns true if safe, false if it would create a cycle.
+function wouldCreateCycle(stageId, prereqId, allStages) {
+  if (stageId === prereqId) return true;
+  const byId = Object.fromEntries(allStages.map(s => [s.id, s]));
+  // Walk up from prereqId's prerequisites to see if we reach stageId
+  const visited = new Set();
+  const stack = [prereqId];
+  while (stack.length) {
+    const cur = stack.pop();
+    if (visited.has(cur)) continue;
+    visited.add(cur);
+    const node = byId[cur];
+    if (!node || !Array.isArray(node.prerequisites)) continue;
+    for (const p of node.prerequisites) {
+      if (p === stageId) return true;
+      stack.push(p);
+    }
+  }
+  return false;
+}
+
 // Count productive days between two dates (inclusive)
 function countProductiveDays(startDateStr, endDateStr, workingDays, dateOverrides) {
   if (!startDateStr || !endDateStr) return 0;
@@ -163,10 +271,10 @@ const INITIAL_DATA = {
         { id: "M07", name: "Cabina Pintura-A", stageId: "S5", capacityPerHour: 15 },
       ],
       skus: [
-        { id: "SKU-C01", name: "Comedor Rústico 4p",    family: "Rústico",    batchSize: 4, color: "#E07B39", unitValue: 1200000, inventory:  20, maxConsecutiveDays: 3, stageTimes: { S1: 45, S2: 30, S3:  90, S4: 60, S5: 40 } },
-        { id: "SKU-C02", name: "Comedor Moderno 6p",    family: "Moderno",    batchSize: 6, color: "#3A7BD5", unitValue: 1800000, inventory:  -8, maxConsecutiveDays: 3, stageTimes: { S1: 35, S2: 25, S3: 110, S4: 50, S5: 35 } },
-        { id: "SKU-C03", name: "Comedor Industrial 4p", family: "Industrial", batchSize: 4, color: "#6B7A8D", unitValue: 1400000, inventory:  15, maxConsecutiveDays: 3, stageTimes: { S1: 50, S2: 20, S3:  80, S4: 70, S5: 45 } },
-        { id: "SKU-C04", name: "Comedor Clásico 8p",    family: "Clásico",    batchSize: 8, color: "#C9A84C", unitValue: 2500000, inventory:   3, maxConsecutiveDays: 3, stageTimes: { S1: 60, S2: 40, S3: 130, S4: 80, S5: 55 } },
+        { id: "SKU-C01", name: "Comedor Rústico 4p",    family: "Rústico",    batchSize: 4, color: "#E07B39", unitValue: 1200000, inventory:  20, maxConsecutiveDays: 3, optimalBatchesPerDay: 4, stageTimes: { S1: 45, S2: 30, S3:  90, S4: 60, S5: 40 } },
+        { id: "SKU-C02", name: "Comedor Moderno 6p",    family: "Moderno",    batchSize: 6, color: "#3A7BD5", unitValue: 1800000, inventory:  -8, maxConsecutiveDays: 3, optimalBatchesPerDay: 3, stageTimes: { S1: 35, S2: 25, S3: 110, S4: 50, S5: 35 } },
+        { id: "SKU-C03", name: "Comedor Industrial 4p", family: "Industrial", batchSize: 4, color: "#6B7A8D", unitValue: 1400000, inventory:  15, maxConsecutiveDays: 3, optimalBatchesPerDay: 5, stageTimes: { S1: 50, S2: 20, S3:  80, S4: 70, S5: 45 } },
+        { id: "SKU-C04", name: "Comedor Clásico 8p",    family: "Clásico",    batchSize: 8, color: "#C9A84C", unitValue: 2500000, inventory:   3, maxConsecutiveDays: 3, optimalBatchesPerDay: 2, stageTimes: { S1: 60, S2: 40, S3: 130, S4: 80, S5: 55 } },
       ],
       forbiddenSequences: [
         { id: "FS1", from: "SKU-C01", to: "SKU-C03", reason: "Cambio de tinte requiere limpieza mayor (2h)" },
@@ -176,6 +284,7 @@ const INITIAL_DATA = {
         { id: "PR1", from: "SKU-C02", before: "SKU-C01", reason: "Aprovechar MP de cortes 6p para 4p en caso de error" },
       ],
       dateOverrides: {},
+      familyRoutes: {},  // family-name → [stageId, stageId, ...] for custom family routes
       setupMatrix: {
         "SKU-C01|SKU-C02": 20, "SKU-C01|SKU-C03": 90, "SKU-C01|SKU-C04": 30,
         "SKU-C02|SKU-C01": 20, "SKU-C02|SKU-C03": 40, "SKU-C02|SKU-C04": 25,
@@ -205,10 +314,10 @@ const INITIAL_DATA = {
         { id: "M18", name: "Estación QC",        stageId: "S6", capacityPerHour: 12 },
       ],
       skus: [
-        { id: "SKU-S01", name: "Sofá 3-cuerpos Tela", family: "Tela",    batchSize: 2, color: "#2E86AB", unitValue: 2000000, inventory:   5, maxConsecutiveDays: 3, stageTimes: { S1:  60, S2: 45, S3: 120, S4:  90, S5:  80, S6: 20 } },
-        { id: "SKU-S02", name: "Sofá Piel Premium",   family: "Piel",    batchSize: 1, color: "#A23B72", unitValue: 4500000, inventory:  -3, maxConsecutiveDays: 3, stageTimes: { S1:  90, S2: 60, S3: 180, S4: 110, S5: 120, S6: 30 } },
-        { id: "SKU-S03", name: "Loveseat Tela 2p",    family: "Tela",    batchSize: 3, color: "#48CAE4", unitValue: 1500000, inventory:   8, maxConsecutiveDays: 3, stageTimes: { S1:  40, S2: 30, S3:  80, S4:  60, S5:  55, S6: 15 } },
-        { id: "SKU-S04", name: "Seccional Modular",   family: "Modular", batchSize: 1, color: "#F4A261", unitValue: 5500000, inventory:   0, maxConsecutiveDays: 3, stageTimes: { S1: 120, S2: 80, S3: 200, S4: 150, S5: 160, S6: 40 } },
+        { id: "SKU-S01", name: "Sofá 3-cuerpos Tela", family: "Tela",    batchSize: 2, color: "#2E86AB", unitValue: 2000000, inventory:   5, maxConsecutiveDays: 3, optimalBatchesPerDay: 3, stageTimes: { S1:  60, S2: 45, S3: 120, S4:  90, S5:  80, S6: 20 } },
+        { id: "SKU-S02", name: "Sofá Piel Premium",   family: "Piel",    batchSize: 1, color: "#A23B72", unitValue: 4500000, inventory:  -3, maxConsecutiveDays: 3, optimalBatchesPerDay: 2, stageTimes: { S1:  90, S2: 60, S3: 180, S4: 110, S5: 120, S6: 30 } },
+        { id: "SKU-S03", name: "Loveseat Tela 2p",    family: "Tela",    batchSize: 3, color: "#48CAE4", unitValue: 1500000, inventory:   8, maxConsecutiveDays: 3, optimalBatchesPerDay: 4, stageTimes: { S1:  40, S2: 30, S3:  80, S4:  60, S5:  55, S6: 15 } },
+        { id: "SKU-S04", name: "Seccional Modular",   family: "Modular", batchSize: 1, color: "#F4A261", unitValue: 5500000, inventory:   0, maxConsecutiveDays: 3, optimalBatchesPerDay: 1, stageTimes: { S1: 120, S2: 80, S3: 200, S4: 150, S5: 160, S6: 40 } },
       ],
       forbiddenSequences: [
         { id: "FS1", from: "SKU-S02", to: "SKU-S01", reason: "Piel y tela no comparten herramientas sin descontaminación" },
@@ -216,6 +325,7 @@ const INITIAL_DATA = {
       ],
       priorityRules: [],
       dateOverrides: {},
+      familyRoutes: {},
       setupMatrix: {
         "SKU-S01|SKU-S02": 45, "SKU-S01|SKU-S03": 15, "SKU-S01|SKU-S04": 60,
         "SKU-S02|SKU-S01": 45, "SKU-S02|SKU-S03": 50, "SKU-S02|SKU-S04": 40,
@@ -428,22 +538,35 @@ function buildSchedule(data, heuristic, lineId, customOrder, startTimeMs, use2op
     line.machines.forEach(m => { mA[m.id] = t0; });
     line.stages.forEach(s   => { sA[s.id] = t0; });
     let maxT = 0, sumT = 0;
-    const sortedStages = line.stages.slice().sort((a,b) => a.order - b.order);
     for (const batch of orderedBatches) {
-      let prevEnd = t0, finalEnd = nowMs;
-      for (const stage of sortedStages) {
+      // Use per-SKU custom route + topo sort for prereqs
+      const skuObj = line.skus.find(s => s.id === batch.skuId);
+      const routeStagesRaw = getStagesForSku(skuObj, line);
+      const topo = topoSortStages(routeStagesRaw, line.stages);
+      const routeStages = topo.ordered;
+      const prereqMap = topo.prereqMap;
+      const batchStageEnd = {};
+      let lastEnd = t0, finalEnd = nowMs;
+      for (const stage of routeStages) {
         const sms = line.machines.filter(m => m.stageId === stage.id);
         if (!sms.length) continue;
         const stMins    = (batch.stageTimes[stage.id] || 0) * batch.qty;
         const setupMins = pSku[stage.id] && pSku[stage.id] !== batch.skuId
           ? (line.setupMatrix[`${pSku[stage.id]}|${batch.skuId}`] || 0) : 0;
         const machine   = sms.reduce((best,m) => (mA[m.id]||0) < (mA[best.id]||0) ? m : best, sms[0]);
-        const earliest  = Math.max(prevEnd, mA[machine.id]||0, sA[stage.id]||0);
+        const prereqs = prereqMap[stage.id] || [];
+        const predecessorEnd = prereqs.length > 0
+          ? Math.max(t0, ...prereqs.map(pid => batchStageEnd[pid] || t0))
+          : lastEnd;
+        const earliest  = Math.max(predecessorEnd, mA[machine.id]||0, sA[stage.id]||0);
         const setupStartMs = snapToShift(earliest, shifts, wd, dOv);
         const workStartMs  = setupMins > 0 ? addWorkingTime(setupStartMs, setupMins*60000, shifts, wd, dOv) : setupStartMs;
         const opEndMs      = addWorkingTime(workStartMs, stMins*60000, shifts, wd, dOv);
         mA[machine.id] = opEndMs; sA[stage.id] = opEndMs;
-        pSku[stage.id]  = batch.skuId; prevEnd = opEndMs; finalEnd = opEndMs;
+        pSku[stage.id] = batch.skuId;
+        batchStageEnd[stage.id] = opEndMs;
+        lastEnd = opEndMs;
+        if (opEndMs > finalEnd) finalEnd = opEndMs;
       }
       const tard = Math.max(0, (finalEnd - new Date(batch.dueDate).getTime()) / 60000);
       if (tard > maxT) maxT = tard;
@@ -488,9 +611,11 @@ function buildSchedule(data, heuristic, lineId, customOrder, startTimeMs, use2op
       }
       const sk = skuByIdMap[runSkuId];
       const maxDays = (sk && typeof sk.maxConsecutiveDays === "number" && sk.maxConsecutiveDays > 0) ? sk.maxConsecutiveDays : 3;
-      // Estimate batches-per-day: use sku.maxBatchesPerDay if defined (Phase 2 forward-compat),
-      // otherwise default to 5 batches per day as a reasonable proxy.
-      const batchesPerDay = (sk && typeof sk.maxBatchesPerDay === "number" && sk.maxBatchesPerDay > 0) ? sk.maxBatchesPerDay : 5;
+      // Use optimalBatchesPerDay if defined (real production capacity per SKU per day),
+      // otherwise fall back to legacy maxBatchesPerDay, then to a generic proxy of 5.
+      const batchesPerDay = (sk && typeof sk.optimalBatchesPerDay === "number" && sk.optimalBatchesPerDay > 0)
+        ? sk.optimalBatchesPerDay
+        : (sk && typeof sk.maxBatchesPerDay === "number" && sk.maxBatchesPerDay > 0) ? sk.maxBatchesPerDay : 5;
       if (runLen > maxDays * batchesPerDay) return false;
     }
     return true;
@@ -518,7 +643,9 @@ function buildSchedule(data, heuristic, lineId, customOrder, startTimeMs, use2op
         }
         const sk = skuByIdMap[runSkuId];
         const maxDays = (sk && typeof sk.maxConsecutiveDays === "number" && sk.maxConsecutiveDays > 0) ? sk.maxConsecutiveDays : 3;
-        const batchesPerDay = (sk && typeof sk.maxBatchesPerDay === "number" && sk.maxBatchesPerDay > 0) ? sk.maxBatchesPerDay : 5;
+        const batchesPerDay = (sk && typeof sk.optimalBatchesPerDay === "number" && sk.optimalBatchesPerDay > 0)
+          ? sk.optimalBatchesPerDay
+          : (sk && typeof sk.maxBatchesPerDay === "number" && sk.maxBatchesPerDay > 0) ? sk.maxBatchesPerDay : 5;
         const limit = maxDays * batchesPerDay;
         if (runLen > limit) {
           // Find a batch further along with a different SKU to swap in here
@@ -636,20 +763,41 @@ function buildSchedule(data, heuristic, lineId, customOrder, startTimeMs, use2op
 
   const scheduled = batches.map(batch => {
     const ops = [];
-    let prevEnd = t0;
-    line.stages.sort((a,b) => a.order - b.order).forEach(stage => {
+    // Resolve route: SKU custom > Family custom > Default
+    const skuObj = line.skus.find(s => s.id === batch.skuId);
+    const routeStagesRaw = getStagesForSku(skuObj, line);
+    // Topological sort honoring per-stage prerequisites (falls back to .order if none defined)
+    const topo = topoSortStages(routeStagesRaw, line.stages);
+    if (topo.cycleDetected) {
+      violations.push({ batchId: batch.id, message: `Ciclo detectado en prerrequisitos de etapas para ${batch.skuName}. Se ignora la dependencia.` });
+    }
+    const routeStages = topo.ordered;
+    const prereqMap = topo.prereqMap;
+    // Track per-batch stage end times for prerequisite resolution
+    const batchStageEnd = {};
+    let lastOpEnd = t0;  // for stages without explicit prereqs (legacy / no prereqs)
+    routeStages.forEach(stage => {
       const sms = line.machines.filter(m => m.stageId === stage.id);
       if (!sms.length) return;
       const stMins    = (batch.stageTimes[stage.id] || 0) * batch.qty;
       const setupMins = prevSku[stage.id] && prevSku[stage.id] !== batch.skuId
         ? (line.setupMatrix[`${prevSku[stage.id]}|${batch.skuId}`] || 0) : 0;
       const machine   = sms.reduce((best,m) => (mAvail[m.id]||0) < (mAvail[best.id]||0) ? m : best, sms[0]);
-      const earliest  = Math.max(prevEnd, mAvail[machine.id]||0, sAvail[stage.id]||0);
+      // Determine the predecessor time:
+      // - If stage has explicit prereqs (in topo.prereqMap), wait for max(prereq end times) — the slowest finishes last
+      // - Else (legacy): wait for the previous op end (sequential behavior)
+      const prereqs = prereqMap[stage.id] || [];
+      const predecessorEnd = prereqs.length > 0
+        ? Math.max(t0, ...prereqs.map(pid => batchStageEnd[pid] || t0))
+        : lastOpEnd;
+      const earliest  = Math.max(predecessorEnd, mAvail[machine.id]||0, sAvail[stage.id]||0);
       const setupStartMs = snapToShift(earliest, shifts, wd, dOv);
       const workStartMs  = setupMins > 0 ? addWorkingTime(setupStartMs, setupMins*60000, shifts, wd, dOv) : setupStartMs;
       const opEndMs      = addWorkingTime(workStartMs, stMins*60000, shifts, wd, dOv);
       mAvail[machine.id] = opEndMs; sAvail[stage.id] = opEndMs;
-      prevSku[stage.id]  = batch.skuId; prevEnd = opEndMs;
+      prevSku[stage.id]  = batch.skuId;
+      batchStageEnd[stage.id] = opEndMs;
+      lastOpEnd = opEndMs;
       ops.push({
         stageId: stage.id, stageName: stage.name,
         machineId: machine.id, machineName: machine.name,
@@ -659,7 +807,23 @@ function buildSchedule(data, heuristic, lineId, customOrder, startTimeMs, use2op
         endTime:    new Date(opEndMs),
       });
     });
-    const finalEnd = ops.length ? ops[ops.length-1].endTime : new Date(nowMs);
+    // final end = max of all stage ends (covers parallel-finishing graphs)
+    const finalEndMs = ops.length ? Math.max(...ops.map(o => o.endTime.getTime())) : nowMs;
+    const finalEnd = new Date(finalEndMs);
+    // Mark parallel ops: an op is parallel if its time window overlaps with another op of the SAME batch
+    // (different stage and machine). Useful for visual indicator in Gantt.
+    ops.forEach(o => {
+      const oStart = o.setupStart.getTime();
+      const oEnd   = o.endTime.getTime();
+      o.isParallel = ops.some(other => {
+        if (other === o) return false;
+        if (other.stageId === o.stageId) return false;
+        const otherStart = other.setupStart.getTime();
+        const otherEnd   = other.endTime.getTime();
+        // Overlap if windows intersect
+        return oStart < otherEnd && otherStart < oEnd;
+      });
+    });
     const dueMs = new Date(batch.dueDate).getTime();
     const tard = Math.max(0, (finalEnd.getTime() - dueMs) / 60000);
     // Slack: positive if there's room, negative if already late by the schedule
@@ -856,6 +1020,511 @@ function SkuAutocomplete({ value, skus, onChange, style, placeholder = "Escribe 
           Sin coincidencias. Verifica el código o nombre.
         </div>
       )}
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════
+// Route Editor Modal (Phase 2 — 1.1)
+// ════════════════════════════════════════════════════════════════
+// Allows editing the route (sequence of stages) for a SKU or a family.
+// Custom routes can ONLY use stages that exist in line.stages; they reorder
+// and/or omit some, but never introduce new ones.
+function RouteEditorModal({ line, editor, onSave, onClose, themeMode }) {
+  const allStages = (line.stages || []).slice().sort((a,b) => a.order - b.order);
+  const defaultRouteIds = allStages.map(s => s.id);
+
+  // Resolve currently saved route for this target
+  let savedRoute = null, targetLabel = "", targetName = "";
+  if (editor.kind === "sku") {
+    const sku = line.skus.find(s => s.id === editor.target);
+    if (sku) {
+      savedRoute = Array.isArray(sku.customRoute) ? sku.customRoute : null;
+      targetLabel = `SKU: ${sku.name}`;
+      targetName = sku.name;
+    }
+  } else if (editor.kind === "family") {
+    savedRoute = line.familyRoutes && Array.isArray(line.familyRoutes[editor.target]) ? line.familyRoutes[editor.target] : null;
+    targetLabel = `Familia: ${editor.target}`;
+    targetName = editor.target;
+  }
+
+  const initial = savedRoute && savedRoute.length > 0 ? savedRoute : defaultRouteIds;
+  const [route, setRoute] = useState(initial);
+  const [dragId, setDragId] = useState(null);
+
+  const isInherited = !savedRoute;
+  const stageById = Object.fromEntries(allStages.map(s => [s.id, s]));
+  const includedIds = new Set(route);
+
+  const toggle = (sid) => {
+    if (includedIds.has(sid)) {
+      setRoute(route.filter(id => id !== sid));
+    } else {
+      setRoute([...route, sid]);
+    }
+  };
+
+  const moveUp = (idx) => {
+    if (idx === 0) return;
+    const next = route.slice();
+    [next[idx-1], next[idx]] = [next[idx], next[idx-1]];
+    setRoute(next);
+  };
+  const moveDown = (idx) => {
+    if (idx === route.length - 1) return;
+    const next = route.slice();
+    [next[idx], next[idx+1]] = [next[idx+1], next[idx]];
+    setRoute(next);
+  };
+
+  const handleDrop = (targetIdx) => {
+    if (dragId === null) return;
+    const srcIdx = route.indexOf(dragId);
+    if (srcIdx < 0 || srcIdx === targetIdx) { setDragId(null); return; }
+    const next = route.slice();
+    next.splice(srcIdx, 1);
+    next.splice(targetIdx, 0, dragId);
+    setRoute(next);
+    setDragId(null);
+  };
+
+  const resetToDefault = () => setRoute(defaultRouteIds);
+  const clearAndInherit = () => onSave(null);  // null = inherit
+  const saveRoute = () => onSave(route);
+
+  const isModified = JSON.stringify(route) !== JSON.stringify(defaultRouteIds);
+  const omittedStages = allStages.filter(s => !includedIds.has(s.id));
+
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.7)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}} onClick={onClose}>
+      <div onClick={e=>e.stopPropagation()} style={{background:"var(--surface-2)",border:"1px solid var(--border-2)",borderRadius:10,padding:24,maxWidth:560,width:"92%",maxHeight:"85vh",overflow:"auto",boxShadow:"0 20px 60px rgba(0,0,0,.5)"}}>
+        <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:6,gap:8}}>
+          <div>
+            <div style={{fontSize:16,fontWeight:600,color:"#F59E0B"}}>🛣 Editar ruta de producción</div>
+            <div style={{fontSize:11,color:"var(--text-muted)",marginTop:2}}>{targetLabel}</div>
+          </div>
+          <div style={{display:"flex",gap:5}}>
+            <span style={{fontSize:9,padding:"3px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontWeight:600,
+              background: isInherited ? "rgba(107,114,128,.15)" : (isModified ? "rgba(245,158,11,.15)" : "rgba(52,211,153,.15)"),
+              color: isInherited ? "var(--text-dim)" : (isModified ? "#F59E0B" : "#34D399"),
+              border: "1px solid " + (isInherited ? "var(--border-2)" : (isModified ? "rgba(245,158,11,.35)" : "rgba(52,211,153,.35)"))}}>
+              {isInherited ? "HEREDADA" : (isModified ? "PERSONALIZADA" : "= DEFAULT")}
+            </span>
+          </div>
+        </div>
+
+        <div style={{fontSize:11,color:"var(--text-muted)",lineHeight:1.5,marginBottom:14,padding:"8px 12px",background:"rgba(56,189,248,.06)",border:"1px solid rgba(56,189,248,.2)",borderRadius:6}}>
+          {editor.kind === "sku" ? (
+            <>Precedencia: <b>SKU específico → Familia → Default</b>. Si guardas vacío, este SKU vuelve a heredar la ruta.</>
+          ) : (
+            <>Esta ruta aplicará a todos los SKUs de la familia <b>{targetName}</b> que no tengan su propia ruta personalizada.</>
+          )}
+        </div>
+
+        {/* Active route (ordered, drag & drop) */}
+        <div style={{marginBottom:14}}>
+          <div style={{fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",marginBottom:6}}>Etapas en esta ruta ({route.length})</div>
+          {route.length === 0 && (
+            <div style={{padding:"12px",textAlign:"center",fontSize:11,color:"#F87171",background:"rgba(248,113,113,.06)",border:"1px dashed rgba(248,113,113,.3)",borderRadius:6}}>
+              ⚠ Sin etapas: este {editor.kind === "sku" ? "SKU" : "familia"} no se programará.
+            </div>
+          )}
+          <div style={{display:"flex",flexDirection:"column",gap:5}}>
+            {route.map((sid, idx) => {
+              const st = stageById[sid];
+              if (!st) return null;
+              return (
+                <div key={sid}
+                  draggable
+                  onDragStart={()=>setDragId(sid)}
+                  onDragOver={(e)=>{e.preventDefault();}}
+                  onDrop={()=>handleDrop(idx)}
+                  onDragEnd={()=>setDragId(null)}
+                  style={{display:"flex",alignItems:"center",gap:8,padding:"8px 12px",background:dragId===sid?"rgba(245,158,11,.15)":"var(--surface)",borderRadius:6,border:"1px solid var(--border)",cursor:"grab",opacity:dragId===sid?.5:1}}>
+                  <span style={{fontSize:13,color:"var(--text-dim)",cursor:"grab"}}>⠿</span>
+                  <span style={{fontSize:11,fontFamily:"'DM Mono',monospace",color:"#F59E0B",width:22}}>{idx+1}.</span>
+                  <span style={{flex:1,fontSize:12,fontWeight:500}}>{st.name}</span>
+                  <button onClick={()=>moveUp(idx)} disabled={idx===0} style={{width:24,height:22,padding:0,borderRadius:4,background:"transparent",border:"1px solid var(--border-2)",color:idx===0?"var(--border-2)":"var(--text-muted)",cursor:idx===0?"not-allowed":"pointer",fontSize:11}}>↑</button>
+                  <button onClick={()=>moveDown(idx)} disabled={idx===route.length-1} style={{width:24,height:22,padding:0,borderRadius:4,background:"transparent",border:"1px solid var(--border-2)",color:idx===route.length-1?"var(--border-2)":"var(--text-muted)",cursor:idx===route.length-1?"not-allowed":"pointer",fontSize:11}}>↓</button>
+                  <button onClick={()=>toggle(sid)} title="Eliminar de la ruta" style={{width:24,height:22,padding:0,borderRadius:4,background:"rgba(248,113,113,.08)",border:"1px solid rgba(248,113,113,.2)",color:"#F87171",cursor:"pointer",fontSize:13}}>×</button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Omitted stages (to re-add) */}
+        {omittedStages.length > 0 && (
+          <div style={{marginBottom:14}}>
+            <div style={{fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",marginBottom:6}}>Etapas omitidas (click para reañadir)</div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
+              {omittedStages.map(st => (
+                <button key={st.id} onClick={()=>toggle(st.id)} style={{padding:"5px 10px",fontSize:10,fontFamily:"'DM Mono',monospace",borderRadius:5,background:"transparent",border:"1px dashed var(--border-2)",color:"var(--text-dim)",cursor:"pointer"}}>
+                  + {st.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Footer actions */}
+        <div style={{display:"flex",gap:8,justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",paddingTop:10,borderTop:"1px solid var(--border)"}}>
+          <div style={{display:"flex",gap:6}}>
+            <button onClick={resetToDefault} title="Restaurar el orden y composición del default de la línea" style={{padding:"6px 11px",borderRadius:5,background:"transparent",border:"1px solid var(--border-2)",color:"var(--text-dim)",cursor:"pointer",fontSize:10,fontFamily:"'DM Mono',monospace"}}>↺ Restaurar default</button>
+            {!isInherited && (
+              <button onClick={clearAndInherit} title={editor.kind === "sku" ? "Eliminar ruta personalizada y heredar de familia/default" : "Eliminar ruta de familia y dejar que cada SKU use default"} style={{padding:"6px 11px",borderRadius:5,background:"rgba(248,113,113,.06)",border:"1px solid rgba(248,113,113,.2)",color:"#F87171",cursor:"pointer",fontSize:10,fontFamily:"'DM Mono',monospace"}}>🗑 Eliminar personalización</button>
+            )}
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            <button onClick={onClose} style={{padding:"7px 14px",borderRadius:5,background:"transparent",border:"1px solid var(--border-2)",color:"var(--text-muted)",cursor:"pointer",fontSize:12,fontFamily:"'DM Mono',monospace"}}>Cancelar</button>
+            <button onClick={saveRoute} disabled={route.length === 0} style={{padding:"7px 14px",borderRadius:5,background:"rgba(245,158,11,.15)",border:"1px solid rgba(245,158,11,.3)",color:"#F59E0B",cursor:route.length === 0 ? "not-allowed" : "pointer",opacity:route.length===0?.4:1,fontSize:12,fontFamily:"'DM Mono',monospace",fontWeight:600}}>Guardar ruta</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════
+// Undo Toast (Phase 3 — 5.1)
+// ════════════════════════════════════════════════════════════════
+// Floating snackbar shown after a soft delete. Has an 8s timer and a button to undo.
+function UndoToast({ item, onUndo, onDismiss }) {
+  const total = 8000;
+  const [remaining, setRemaining] = useState(Math.max(0, item.expiresAt - Date.now()));
+  useEffect(() => {
+    const tick = () => setRemaining(Math.max(0, item.expiresAt - Date.now()));
+    const interval = setInterval(tick, 100);
+    return () => clearInterval(interval);
+  }, [item.expiresAt]);
+  const pct = (remaining / total) * 100;
+  return (
+    <div style={{
+      pointerEvents:"auto",
+      background:"var(--surface-2)",
+      border:"1px solid var(--border-2)",
+      borderRadius:8,
+      padding:"10px 14px",
+      minWidth:340,
+      maxWidth:480,
+      boxShadow:"0 8px 24px rgba(0,0,0,.35)",
+      display:"flex",
+      alignItems:"center",
+      gap:12,
+      position:"relative",
+      overflow:"hidden"
+    }}>
+      {/* Progress bar at bottom */}
+      <div style={{position:"absolute",bottom:0,left:0,height:2,width:`${pct}%`,background:"#F59E0B",transition:"width .1s linear"}}/>
+      <span style={{fontSize:16,flexShrink:0}}>↶</span>
+      <div style={{flex:1,minWidth:0}}>
+        <div style={{fontSize:12,color:"var(--text)",fontWeight:600,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{item.label}</div>
+        <div style={{fontSize:9,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",marginTop:2}}>Se eliminará permanentemente en {Math.ceil(remaining/1000)}s</div>
+      </div>
+      <button onClick={onUndo} style={{padding:"5px 12px",fontSize:11,borderRadius:5,background:"rgba(245,158,11,.15)",border:"1px solid rgba(245,158,11,.4)",color:"#F59E0B",cursor:"pointer",fontFamily:"'DM Mono',monospace",fontWeight:700,whiteSpace:"nowrap"}}>Deshacer</button>
+      <button onClick={onDismiss} title="Cerrar" style={{width:22,height:22,padding:0,borderRadius:4,background:"transparent",border:"1px solid var(--border-2)",color:"var(--text-dim)",cursor:"pointer",fontSize:13,lineHeight:1,flexShrink:0}}>×</button>
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════
+// Stages Graph (Phase 3+ — visual prerequisite editor)
+// ════════════════════════════════════════════════════════════════
+// Interactive SVG graph for editing stage prerequisites visually.
+// Layout: nodes are placed in topological levels (left to right).
+// Interaction:
+//   - Click a node to select it as "source"
+//   - Click another node to toggle prereq: source → target (target depends on source)
+//   - Click selected node again to deselect
+//   - Click an arrow to delete that prereq
+//   - "Limpiar todo" removes all prerequisites
+function StagesGraph({ line, onToggle, onClear, wouldCreateCycle }) {
+  const [selected, setSelected] = useState(null);
+  const [hoverEdge, setHoverEdge] = useState(null);
+  const stages = (line.stages || []).slice();
+  if (stages.length === 0) {
+    return (
+      <div style={{textAlign:"center",padding:"40px 20px",color:"var(--text-dim)",fontSize:13,background:"var(--surface)",borderRadius:8,border:"1px dashed var(--border)"}}>
+        Agrega al menos una etapa para visualizar el grafo.
+      </div>
+    );
+  }
+
+  // Build edges from prerequisites
+  // Edge means: prereq → stage (prereq must finish before stage starts)
+  const edges = [];
+  stages.forEach(s => {
+    if (Array.isArray(s.prerequisites)) {
+      s.prerequisites.forEach(pid => {
+        if (stages.find(st => st.id === pid)) edges.push({ from: pid, to: s.id });
+      });
+    }
+  });
+
+  // Compute topological levels (BFS by indegree)
+  // If there's a cycle, fall back to stage.order
+  const indeg = {};
+  const childrenMap = {};
+  stages.forEach(s => { indeg[s.id] = 0; childrenMap[s.id] = []; });
+  edges.forEach(e => { indeg[e.to] = (indeg[e.to]||0) + 1; childrenMap[e.from].push(e.to); });
+
+  const levels = {}; // stageId → level number
+  const queue = stages.filter(s => indeg[s.id] === 0).map(s => ({ id: s.id, lvl: 0 }));
+  const indegCopy = { ...indeg };
+  while (queue.length) {
+    const { id, lvl } = queue.shift();
+    if (levels[id] === undefined || lvl > levels[id]) levels[id] = lvl;
+    childrenMap[id].forEach(childId => {
+      indegCopy[childId]--;
+      queue.push({ id: childId, lvl: lvl + 1 });
+    });
+  }
+  // Anything missing (in a cycle or unreachable) falls back to .order
+  stages.forEach(s => {
+    if (levels[s.id] === undefined) levels[s.id] = Math.max(0, (s.order || 1) - 1);
+  });
+
+  // Group stages by level
+  const byLevel = {};
+  stages.forEach(s => {
+    const lvl = levels[s.id];
+    if (!byLevel[lvl]) byLevel[lvl] = [];
+    byLevel[lvl].push(s);
+  });
+  // Sort each level by stage.order (stable visual)
+  Object.keys(byLevel).forEach(lvl => byLevel[lvl].sort((a,b) => (a.order||0) - (b.order||0)));
+  const maxLevel = Math.max(0, ...Object.keys(byLevel).map(Number));
+
+  // Layout constants
+  const NODE_W = 160;
+  const NODE_H = 56;
+  const HGAP = 90;
+  const VGAP = 22;
+  const PAD = 30;
+  const TOP_PAD = 48; // extra room for parallel labels
+
+  // Position nodes
+  const positions = {};
+  const colHeights = {};
+  for (let lvl = 0; lvl <= maxLevel; lvl++) {
+    const items = byLevel[lvl] || [];
+    colHeights[lvl] = items.length * NODE_H + (items.length - 1) * VGAP;
+  }
+  const maxColHeight = Math.max(0, ...Object.values(colHeights));
+  for (let lvl = 0; lvl <= maxLevel; lvl++) {
+    const items = byLevel[lvl] || [];
+    const colH = colHeights[lvl];
+    const yStart = TOP_PAD + (maxColHeight - colH) / 2;
+    items.forEach((s, idx) => {
+      positions[s.id] = {
+        x: PAD + lvl * (NODE_W + HGAP),
+        y: yStart + idx * (NODE_H + VGAP)
+      };
+    });
+  }
+  const svgW = PAD * 2 + (maxLevel + 1) * NODE_W + maxLevel * HGAP;
+  const svgH = TOP_PAD + maxColHeight + PAD;
+
+  // Identify "parallel groups": columns with 2+ stages that have no edges among themselves.
+  // For each level, check if all pairs of stages in that level are non-adjacent (no direct edge).
+  // If yes, that whole column is a parallel group.
+  const parallelLevels = {}; // level → true if this column runs in parallel
+  for (let lvl = 0; lvl <= maxLevel; lvl++) {
+    const stagesInLevel = byLevel[lvl] || [];
+    if (stagesInLevel.length < 2) continue;
+    const ids = stagesInLevel.map(s => s.id);
+    // Check no edges between any pair in this level
+    let allParallel = true;
+    for (let i = 0; i < ids.length && allParallel; i++) {
+      for (let j = i+1; j < ids.length && allParallel; j++) {
+        if (edges.some(e => (e.from === ids[i] && e.to === ids[j]) || (e.from === ids[j] && e.to === ids[i]))) {
+          allParallel = false;
+        }
+      }
+    }
+    if (allParallel) parallelLevels[lvl] = true;
+  }
+
+  // Click on a node
+  const handleNodeClick = (sid) => {
+    if (!selected) {
+      setSelected(sid);
+    } else if (selected === sid) {
+      setSelected(null);
+    } else {
+      // selected → sid means: sid depends on selected (selected is prereq of sid)
+      // i.e., add selected to sid's prerequisites
+      // Pre-validate cycle
+      if (wouldCreateCycle(sid, selected, stages)) {
+        alert(`⚠ No se puede agregar: crearía un ciclo de dependencias (${selected} → ... → ${sid} → ${selected})`);
+      } else {
+        onToggle(sid, selected);
+      }
+      setSelected(null);
+    }
+  };
+
+  // Edge midpoint for click handler
+  const edgePoints = (from, to) => {
+    const p1 = positions[from];
+    const p2 = positions[to];
+    return {
+      x1: p1.x + NODE_W,
+      y1: p1.y + NODE_H/2,
+      x2: p2.x,
+      y2: p2.y + NODE_H/2,
+      mx: (p1.x + NODE_W + p2.x) / 2,
+      my: (p1.y + NODE_H/2 + p2.y + NODE_H/2) / 2
+    };
+  };
+
+  // Detect cycles (nodes with indeg > 0 but level still 0 won't happen here since fallback sets level by order)
+  // Real cycle detection: nodes whose indegCopy never reached 0
+  const hasCycle = Object.values(indegCopy).some(v => v > 0);
+
+  return (
+    <div>
+      {/* Toolbar */}
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,padding:"8px 12px",background:"var(--surface)",borderRadius:7,border:"1px solid var(--border)",flexWrap:"wrap",gap:8}}>
+        <div style={{fontSize:11,color:"var(--text-muted)",lineHeight:1.5}}>
+          {selected ? (
+            <><strong style={{color:"#A78BFA"}}>Modo conexión:</strong> seleccionado <strong>{stages.find(s=>s.id===selected)?.name}</strong>. Click otra etapa para crear "<strong>{stages.find(s=>s.id===selected)?.name} → otra</strong>" (esa etapa esperará a esta). Click la misma para cancelar.</>
+          ) : (
+            <><strong style={{color:"#F59E0B"}}>💡 Click una etapa</strong> para empezar a crear/eliminar dependencias. Click una flecha para eliminarla.</>
+          )}
+        </div>
+        <div style={{display:"flex",gap:6}}>
+          {selected && <button onClick={()=>setSelected(null)} style={{padding:"5px 10px",fontSize:10,borderRadius:5,background:"transparent",border:"1px solid var(--border-2)",color:"var(--text-dim)",cursor:"pointer",fontFamily:"'DM Mono',monospace"}}>✕ Cancelar selección</button>}
+          {edges.length > 0 && <button onClick={onClear} style={{padding:"5px 10px",fontSize:10,borderRadius:5,background:"rgba(248,113,113,.08)",border:"1px solid rgba(248,113,113,.25)",color:"#F87171",cursor:"pointer",fontFamily:"'DM Mono',monospace"}}>🗑 Limpiar todas las dependencias</button>}
+        </div>
+      </div>
+
+      {hasCycle && (
+        <div style={{padding:"8px 12px",marginBottom:10,background:"rgba(248,113,113,.08)",border:"1px solid rgba(248,113,113,.3)",borderRadius:6,fontSize:11,color:"#F87171"}}>
+          ⚠ Ciclo detectado en las dependencias. El scheduler caerá a orden secuencial por <code>stage.order</code> hasta que se resuelva.
+        </div>
+      )}
+
+      {/* SVG Graph */}
+      <div style={{background:"var(--surface)",borderRadius:8,border:"1px solid var(--border)",padding:10,overflowX:"auto"}}>
+        <svg width={svgW} height={svgH} style={{display:"block",minWidth:"100%",fontFamily:"'DM Mono',monospace"}}>
+          {/* Arrow marker */}
+          <defs>
+            <marker id="arrow-default" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#A78BFA"/>
+            </marker>
+            <marker id="arrow-hover" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#F87171"/>
+            </marker>
+          </defs>
+
+          {/* Parallel column highlights (rendered behind nodes) */}
+          {Object.keys(parallelLevels).map(lvl => {
+            const lvlNum = parseInt(lvl);
+            const items = byLevel[lvlNum] || [];
+            if (items.length < 2) return null;
+            const xs = positions[items[0].id].x;
+            const labelH = 18;
+            const ys = Math.min(...items.map(s => positions[s.id].y)) - labelH - 6;
+            const ye = Math.max(...items.map(s => positions[s.id].y + NODE_H)) + 8;
+            return (
+              <g key={"par-"+lvl}>
+                <rect
+                  x={xs - 8} y={ys}
+                  width={NODE_W + 16} height={ye - ys}
+                  rx={10} ry={10}
+                  fill="rgba(56,189,248,.06)"
+                  stroke="rgba(56,189,248,.25)"
+                  strokeWidth={1}
+                  strokeDasharray="6 4"/>
+                <text
+                  x={xs + NODE_W/2} y={ys + 12}
+                  textAnchor="middle"
+                  fill="#38BDF8"
+                  fontSize="9"
+                  fontWeight="700"
+                  fontFamily="'DM Mono', monospace">
+                  ∥ EN PARALELO
+                </text>
+              </g>
+            );
+          })}
+
+          {/* Edges */}
+          {edges.map((e, i) => {
+            const pts = edgePoints(e.from, e.to);
+            const key = `${e.from}-${e.to}`;
+            const isHover = hoverEdge === key;
+            // Bezier control points (smooth curve)
+            const cx1 = pts.x1 + 40;
+            const cx2 = pts.x2 - 40;
+            const path = `M ${pts.x1} ${pts.y1} C ${cx1} ${pts.y1}, ${cx2} ${pts.y2}, ${pts.x2} ${pts.y2}`;
+            return (
+              <g key={key}>
+                <path d={path}
+                  fill="none"
+                  stroke={isHover ? "#F87171" : "#A78BFA"}
+                  strokeWidth={isHover ? 2.5 : 1.6}
+                  markerEnd={`url(#${isHover ? "arrow-hover" : "arrow-default"})`}
+                  style={{transition:"stroke-width .12s"}}/>
+                {/* Invisible wider hit area */}
+                <path d={path}
+                  fill="none"
+                  stroke="transparent"
+                  strokeWidth={14}
+                  style={{cursor:"pointer"}}
+                  onMouseEnter={()=>setHoverEdge(key)}
+                  onMouseLeave={()=>setHoverEdge(null)}
+                  onClick={()=>{ if (confirm(`¿Eliminar dependencia "${stages.find(s=>s.id===e.from)?.name} → ${stages.find(s=>s.id===e.to)?.name}"?`)) onToggle(e.to, e.from); }}>
+                  <title>Click para eliminar esta dependencia</title>
+                </path>
+              </g>
+            );
+          })}
+
+          {/* Nodes */}
+          {stages.map(s => {
+            const p = positions[s.id];
+            const isSel = selected === s.id;
+            const isTarget = selected && selected !== s.id;
+            const incomingCount = edges.filter(e => e.to === s.id).length;
+            const outgoingCount = edges.filter(e => e.from === s.id).length;
+            // Color based on state
+            const fillColor = isSel ? "rgba(245,158,11,.18)" : "var(--surface-2)";
+            const borderColor = isSel ? "#F59E0B" : (isTarget ? "rgba(167,139,250,.5)" : "var(--border-2)");
+            const borderWidth = isSel ? 2.5 : 1.5;
+            return (
+              <g key={s.id} style={{cursor:"pointer"}} onClick={()=>handleNodeClick(s.id)}>
+                <rect
+                  x={p.x} y={p.y} width={NODE_W} height={NODE_H}
+                  rx={8} ry={8}
+                  fill={fillColor}
+                  stroke={borderColor}
+                  strokeWidth={borderWidth}
+                  strokeDasharray={isTarget ? "4 3" : "none"}
+                  style={{transition:"all .12s"}}/>
+                {/* Stage name */}
+                <text x={p.x + NODE_W/2} y={p.y + 22} textAnchor="middle" fill="var(--text)" fontSize="12" fontWeight="600" fontFamily="'Syne', sans-serif">
+                  {s.name.length > 18 ? s.name.slice(0,17) + "…" : s.name}
+                </text>
+                {/* Stage ID + counts */}
+                <text x={p.x + NODE_W/2} y={p.y + 40} textAnchor="middle" fill="var(--text-dim)" fontSize="9">
+                  {s.id} · entran: {incomingCount} · salen: {outgoingCount}
+                </text>
+                {/* Order badge */}
+                <circle cx={p.x + 12} cy={p.y + 12} r={8} fill="#F59E0B" opacity={0.85}/>
+                <text x={p.x + 12} y={p.y + 15} textAnchor="middle" fill="#0A0A0A" fontSize="9" fontWeight="700">{s.order}</text>
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+
+      {/* Legend */}
+      <div style={{marginTop:10,padding:"8px 12px",background:"var(--surface)",borderRadius:6,fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",lineHeight:1.6}}>
+        <strong style={{color:"var(--text-muted)"}}>Cómo leer el grafo:</strong> los nodos se organizan en columnas (niveles topológicos). Las flechas indican <strong style={{color:"#A78BFA"}}>"debe terminar antes que"</strong> (prerrequisito → etapa que depende). Las columnas con <strong style={{color:"#38BDF8"}}>banda azul ∥ EN PARALELO</strong> contienen etapas que se ejecutan al mismo tiempo (sin dependencias entre sí). El número en el círculo naranja es <strong>Orden</strong> (solo desempate visual cuando hay dependencias; orden secuencial completo si no hay ninguna dependencia declarada).
+      </div>
     </div>
   );
 }
@@ -1064,6 +1733,30 @@ function App() {
 
   // ─── Horizonte de facturación ─────────────────────────────────
   const [showHorizonModal, setShowHorizonModal] = useState(false);
+  // Route editor modal: { kind: "sku"|"family", lid, target } — target is sku.id or family name; null = closed
+  const [routeEditor, setRouteEditor] = useState(null);
+
+  // Undo queue (Phase 3 — 5.1). Items: { id, label, snapshot, expiresAt }
+  // Snapshot is a deep clone of `data` before the destructive action.
+  const [undoQueue, setUndoQueue] = useState([]);
+  const UNDO_DURATION = 8000;
+  // Push a new undo item. Auto-removes after UNDO_DURATION ms.
+  const pushUndo = useCallback((label, snapshot) => {
+    const id = "u" + Date.now() + "_" + Math.floor(Math.random()*999);
+    const expiresAt = Date.now() + UNDO_DURATION;
+    setUndoQueue(q => [...q, { id, label, snapshot, expiresAt }]);
+    setTimeout(() => {
+      setUndoQueue(q => q.filter(item => item.id !== id));
+    }, UNDO_DURATION + 50);
+  }, []);
+  // Apply undo: restores data to the saved snapshot and removes the item.
+  const applyUndo = useCallback((id) => {
+    setUndoQueue(q => {
+      const item = q.find(it => it.id === id);
+      if (item) setData(item.snapshot);
+      return q.filter(it => it.id !== id);
+    });
+  }, []);
   const [showCleanGoalsModal, setShowCleanGoalsModal] = useState(false);
   const [cleanStart, setCleanStart] = useState("");
   const [cleanEnd, setCleanEnd] = useState("");
@@ -1312,6 +2005,7 @@ function App() {
   });
   useEffect(() => { localStorage.setItem("prodScheduler_v4_seqPanelOpen", String(seqPanelOpen)); }, [seqPanelOpen]);
   const [activeConfigTab,setActiveConfigTab]= useState("stages");
+  const [stagesView, setStagesView] = useState("table"); // 'table' | 'graph'
   const [customOrder,    setCustomOrder]    = useState({ L1: null, L2: null });
   const [dragId,         setDragId]         = useState(null);
   const [dragOver,       setDragOver]       = useState(null);
@@ -1369,10 +2063,15 @@ function App() {
     d.lines[li].shifts.push({id:"T"+(Date.now()%10000),name:"Nuevo Turno",start:"22:00",end:"06:00",active:false});
   }),[mutate]);
 
-  const handleRemoveShift     = useCallback((lid,sid) => mutate(d=>{
-    const li=d.lines.findIndex(l=>l.id===lid);
-    d.lines[li].shifts=d.lines[li].shifts.filter(s=>s.id!==sid);
-  }),[mutate]);
+  const handleRemoveShift     = useCallback((lid,sid) => {
+    const line = data.lines.find(l => l.id === lid);
+    const s = line?.shifts?.find(sh => sh.id === sid);
+    pushUndo(s ? `Turno "${s.name}" eliminado` : "Turno eliminado", JSON.parse(JSON.stringify(data)));
+    mutate(d => {
+      const li = d.lines.findIndex(l => l.id === lid);
+      d.lines[li].shifts = d.lines[li].shifts.filter(s => s.id !== sid);
+    });
+  }, [mutate, data, pushUndo]);
 
   const handleWorkingDayToggle= useCallback((lid,day) => mutate(d=>{
     const li=d.lines.findIndex(l=>l.id===lid), wd=d.lines[li].workingDays;
@@ -1405,9 +2104,10 @@ function App() {
     if(!d.dailyGoals[lid]) d.dailyGoals[lid]={};
     const n=parseFloat(val); if(!isNaN(n)&&n>=0) d.dailyGoals[lid][date]=n;
   }),[mutate]);
-  const handleDailyGoalRemove = useCallback((lid,date) => mutate(d=>{
-    if(d.dailyGoals?.[lid]?.[date] !== undefined) delete d.dailyGoals[lid][date];
-  }),[mutate]);
+  const handleDailyGoalRemove = useCallback((lid,date) => {
+    pushUndo(`Meta del ${date} eliminada`, JSON.parse(JSON.stringify(data)));
+    mutate(d => { if(d.dailyGoals?.[lid]?.[date] !== undefined) delete d.dailyGoals[lid][date]; });
+  },[mutate, data, pushUndo]);
 
   // Clear all goals for a line within a date range (inclusive)
   // If startDate/endDate are null, clears ALL goals for the line.
@@ -1454,12 +2154,13 @@ function App() {
     setCustomOrder(p => ({ ...p, [lid]: null }));
   }, [mutate]);
   const handleRemovePriorityRule = useCallback((lid, rid) => {
+    pushUndo("Regla de prioridad eliminada", JSON.parse(JSON.stringify(data)));
     mutate(d => {
       const li = d.lines.findIndex(l => l.id === lid);
       if (d.lines[li].priorityRules) d.lines[li].priorityRules = d.lines[li].priorityRules.filter(r => r.id !== rid);
     });
     setCustomOrder(p => ({ ...p, [lid]: null }));
-  }, [mutate]);
+  }, [mutate, data, pushUndo]);
 
   // Inventory editor for SKUs (signed integer; negative = backlog)
   const handleUpdateInventory = useCallback((lid, sid, val) => mutate(d => {
@@ -1495,23 +2196,140 @@ function App() {
     setTimeout(() => alert(`✓ Aplicado "máx ${val} días consecutivos" a ${count} SKU(s) de la familia "${src.family}"`), 50);
   }), [mutate]);
 
+  // Update optimalBatchesPerDay for a single SKU
+  const handleUpdateOptimalBatches = useCallback((lid, sid, val) => mutate(d => {
+    const li = d.lines.findIndex(l => l.id === lid);
+    const si = d.lines[li].skus.findIndex(s => s.id === sid);
+    if (si >= 0) {
+      const n = parseInt(val);
+      d.lines[li].skus[si].optimalBatchesPerDay = isNaN(n) || n < 1 ? 1 : n;
+    }
+  }), [mutate]);
+
+  // Apply optimalBatchesPerDay of a SKU to all SKUs in the same family
+  const handleApplyOptimalToFamily = useCallback((lid, sid) => mutate(d => {
+    const li = d.lines.findIndex(l => l.id === lid);
+    if (li < 0) return;
+    const src = d.lines[li].skus.find(s => s.id === sid);
+    if (!src || !src.family) return;
+    const val = typeof src.optimalBatchesPerDay === "number" ? src.optimalBatchesPerDay : 5;
+    let count = 0;
+    d.lines[li].skus.forEach(s => {
+      if (s.family === src.family) { s.optimalBatchesPerDay = val; count++; }
+    });
+    setTimeout(() => alert(`✓ Aplicado "${val} lotes óptimos/día" a ${count} SKU(s) de la familia "${src.family}"`), 50);
+  }), [mutate]);
+
+  // ─── CUSTOM ROUTES (Phase 2) ──────────────────────────────────
+  // Set or clear a SKU's customRoute. Pass null to clear (revert to default/family route).
+  const handleUpdateSkuCustomRoute = useCallback((lid, sid, newRoute) => mutate(d => {
+    const li = d.lines.findIndex(l => l.id === lid);
+    if (li < 0) return;
+    const si = d.lines[li].skus.findIndex(s => s.id === sid);
+    if (si < 0) return;
+    if (newRoute === null || (Array.isArray(newRoute) && newRoute.length === 0)) {
+      delete d.lines[li].skus[si].customRoute;
+    } else {
+      // Only keep stage IDs that exist in the line (safety)
+      const validIds = new Set(d.lines[li].stages.map(s => s.id));
+      d.lines[li].skus[si].customRoute = newRoute.filter(id => validIds.has(id));
+    }
+  }), [mutate]);
+
+  // Set or clear a family's customRoute.
+  const handleUpdateFamilyRoute = useCallback((lid, familyName, newRoute) => mutate(d => {
+    const li = d.lines.findIndex(l => l.id === lid);
+    if (li < 0) return;
+    if (!d.lines[li].familyRoutes) d.lines[li].familyRoutes = {};
+    if (newRoute === null || (Array.isArray(newRoute) && newRoute.length === 0)) {
+      delete d.lines[li].familyRoutes[familyName];
+    } else {
+      const validIds = new Set(d.lines[li].stages.map(s => s.id));
+      d.lines[li].familyRoutes[familyName] = newRoute.filter(id => validIds.has(id));
+    }
+  }), [mutate]);
+
   // ─── CRUD: Stages ─────────────────────────────────────────────
   const handleUpdateStage = useCallback((lid, sid, field, val) => mutate(d => {
     const li = d.lines.findIndex(l => l.id === lid);
     const si = d.lines[li].stages.findIndex(s => s.id === sid);
     if (si >= 0) d.lines[li].stages[si][field] = field === "order" ? Math.max(1, parseInt(val)||1) : val;
   }), [mutate]);
+
+  // Toggle a prerequisite for a stage. Validates cycles before allowing.
+  const handleTogglePrerequisite = useCallback((lid, stageId, prereqId) => mutate(d => {
+    const li = d.lines.findIndex(l => l.id === lid);
+    if (li < 0) return;
+    const stage = d.lines[li].stages.find(s => s.id === stageId);
+    if (!stage) return;
+    if (!Array.isArray(stage.prerequisites)) stage.prerequisites = [];
+    const idx = stage.prerequisites.indexOf(prereqId);
+    if (idx >= 0) {
+      stage.prerequisites.splice(idx, 1);
+      if (stage.prerequisites.length === 0) delete stage.prerequisites;
+    } else {
+      // Check cycle before adding
+      if (wouldCreateCycle(stageId, prereqId, d.lines[li].stages)) {
+        setTimeout(() => alert(`⚠ No se puede agregar: crearía un ciclo de dependencias (${prereqId} → ... → ${stageId} → ${prereqId})`), 50);
+        return;
+      }
+      stage.prerequisites.push(prereqId);
+    }
+  }), [mutate]);
+
+  // Clear all prerequisites for a stage (revert to legacy .order behavior)
+  const handleClearPrerequisites = useCallback((lid, stageId) => mutate(d => {
+    const li = d.lines.findIndex(l => l.id === lid);
+    if (li < 0) return;
+    const stage = d.lines[li].stages.find(s => s.id === stageId);
+    if (stage) delete stage.prerequisites;
+  }), [mutate]);
+
+  // Clear ALL prerequisites across all stages in a line (with undo)
+  const handleClearAllPrerequisites = useCallback((lid) => {
+    pushUndo("Todas las dependencias de etapas eliminadas", JSON.parse(JSON.stringify(data)));
+    mutate(d => {
+      const li = d.lines.findIndex(l => l.id === lid);
+      if (li < 0) return;
+      d.lines[li].stages.forEach(s => { delete s.prerequisites; });
+    });
+  }, [mutate, data, pushUndo]);
+
   const handleAddStage = useCallback(lid => mutate(d => {
     const li = d.lines.findIndex(l => l.id === lid);
     const maxOrd = d.lines[li].stages.reduce((m, s) => Math.max(m, s.order), 0);
     d.lines[li].stages.push({ id: "S" + (Date.now()%100000), name: "Nueva Etapa", order: maxOrd + 1 });
   }), [mutate]);
-  const handleRemoveStage = useCallback((lid, sid) => mutate(d => {
-    const li = d.lines.findIndex(l => l.id === lid);
-    d.lines[li].stages   = d.lines[li].stages.filter(s => s.id !== sid);
-    d.lines[li].machines = d.lines[li].machines.filter(m => m.stageId !== sid);
-    d.lines[li].skus.forEach(s => { if (s.stageTimes) delete s.stageTimes[sid]; });
-  }), [mutate]);
+  const handleRemoveStage = useCallback((lid, sid) => {
+    const line = data.lines.find(l => l.id === lid);
+    const st = line?.stages.find(s => s.id === sid);
+    pushUndo(st ? `Etapa "${st.name}" eliminada` : "Etapa eliminada", JSON.parse(JSON.stringify(data)));
+    mutate(d => {
+      const li = d.lines.findIndex(l => l.id === lid);
+      d.lines[li].stages   = d.lines[li].stages.filter(s => s.id !== sid);
+      d.lines[li].machines = d.lines[li].machines.filter(m => m.stageId !== sid);
+      // Clean any prerequisites referencing the removed stage
+      d.lines[li].stages.forEach(s => {
+        if (Array.isArray(s.prerequisites)) {
+          s.prerequisites = s.prerequisites.filter(pid => pid !== sid);
+          if (s.prerequisites.length === 0) delete s.prerequisites;
+        }
+      });
+      d.lines[li].skus.forEach(s => {
+        if (s.stageTimes) delete s.stageTimes[sid];
+        if (Array.isArray(s.customRoute)) {
+          s.customRoute = s.customRoute.filter(id => id !== sid);
+          if (s.customRoute.length === 0) delete s.customRoute;
+        }
+      });
+      if (d.lines[li].familyRoutes) {
+        Object.keys(d.lines[li].familyRoutes).forEach(fam => {
+          d.lines[li].familyRoutes[fam] = d.lines[li].familyRoutes[fam].filter(id => id !== sid);
+          if (d.lines[li].familyRoutes[fam].length === 0) delete d.lines[li].familyRoutes[fam];
+        });
+      }
+    });
+  }, [mutate, data, pushUndo]);
 
   // ─── CRUD: Machines ───────────────────────────────────────────
   const handleUpdateMachine = useCallback((lid, mid, field, val) => mutate(d => {
@@ -1524,10 +2342,15 @@ function App() {
     const firstStage = d.lines[li].stages[0];
     d.lines[li].machines.push({ id: "M" + (Date.now()%100000), name: "Nueva Máquina", stageId: firstStage?.id || "", capacityPerHour: 10 });
   }), [mutate]);
-  const handleRemoveMachine = useCallback((lid, mid) => mutate(d => {
-    const li = d.lines.findIndex(l => l.id === lid);
-    d.lines[li].machines = d.lines[li].machines.filter(m => m.id !== mid);
-  }), [mutate]);
+  const handleRemoveMachine = useCallback((lid, mid) => {
+    const line = data.lines.find(l => l.id === lid);
+    const m = line?.machines.find(mm => mm.id === mid);
+    pushUndo(m ? `Máquina "${m.name}" eliminada` : "Máquina eliminada", JSON.parse(JSON.stringify(data)));
+    mutate(d => {
+      const li = d.lines.findIndex(l => l.id === lid);
+      d.lines[li].machines = d.lines[li].machines.filter(m => m.id !== mid);
+    });
+  }, [mutate, data, pushUndo]);
 
   // ─── CRUD: SKUs ───────────────────────────────────────────────
   const handleUpdateSku = useCallback((lid, sid, field, val) => mutate(d => {
@@ -1560,16 +2383,21 @@ function App() {
       batchSize: 1, unitValue: 0, color: nextPaletteColor(d.lines[li].skus), stageTimes
     });
   }), [mutate]);
-  const handleRemoveSku = useCallback((lid, sid) => mutate(d => {
-    const li = d.lines.findIndex(l => l.id === lid);
-    d.lines[li].skus = d.lines[li].skus.filter(s => s.id !== sid);
-    // Clean setup matrix entries
-    Object.keys(d.lines[li].setupMatrix || {}).forEach(k => {
-      if (k.includes(sid)) delete d.lines[li].setupMatrix[k];
+  const handleRemoveSku = useCallback((lid, sid) => {
+    const line = data.lines.find(l => l.id === lid);
+    const sku = line?.skus.find(s => s.id === sid);
+    pushUndo(sku ? `SKU "${sku.name}" eliminado` : "SKU eliminado", JSON.parse(JSON.stringify(data)));
+    mutate(d => {
+      const li = d.lines.findIndex(l => l.id === lid);
+      d.lines[li].skus = d.lines[li].skus.filter(s => s.id !== sid);
+      // Clean setup matrix entries
+      Object.keys(d.lines[li].setupMatrix || {}).forEach(k => {
+        if (k.includes(sid)) delete d.lines[li].setupMatrix[k];
+      });
+      // Clean forbidden sequences
+      d.lines[li].forbiddenSequences = d.lines[li].forbiddenSequences.filter(f => f.from !== sid && f.to !== sid);
     });
-    // Clean forbidden sequences
-    d.lines[li].forbiddenSequences = d.lines[li].forbiddenSequences.filter(f => f.from !== sid && f.to !== sid);
-  }), [mutate]);
+  }, [mutate, data, pushUndo]);
 
   // ─── CRUD: Forbidden Sequences ────────────────────────────────
   const handleUpdateForbidden = useCallback((lid, fid, field, val) => {
@@ -1612,12 +2440,13 @@ function App() {
     setCustomOrder(p => ({ ...p, [lid]: null }));
   }, [mutate]);
   const handleRemoveForbidden = useCallback((lid, fid) => {
+    pushUndo("Regla prohibida eliminada", JSON.parse(JSON.stringify(data)));
     mutate(d => {
       const li = d.lines.findIndex(l => l.id === lid);
       d.lines[li].forbiddenSequences = d.lines[li].forbiddenSequences.filter(f => f.id !== fid);
     });
     setCustomOrder(p => ({ ...p, [lid]: null }));
-  }, [mutate]);
+  }, [mutate, data, pushUndo]);
 
   // ─── CRUD: Setup Matrix ───────────────────────────────────────
   const handleUpdateSetup = useCallback((lid, from, to, mins) => mutate(d => {
@@ -1803,9 +2632,12 @@ function App() {
     reader.readAsArrayBuffer(file);
   }, [mutate]);
 
-  const handleRemoveOrder = useCallback(oid => mutate(d => {
-    d.orders = d.orders.filter(o => o.id !== oid);
-  }), [mutate]);
+  const handleRemoveOrder = useCallback(oid => {
+    const order = data.orders.find(o => o.id === oid);
+    const label = order ? `Orden ${order.id} eliminada` : "Orden eliminada";
+    pushUndo(label, JSON.parse(JSON.stringify(data)));
+    mutate(d => { d.orders = d.orders.filter(o => o.id !== oid); });
+  }, [mutate, data, pushUndo]);
   const handleDuplicateOrder = useCallback(oid => mutate(d => {
     const o = d.orders.find(x => x.id === oid);
     if (o) d.orders.push({ ...o, id: o.id + "-c" + (Date.now()%1000), status: "pending" });
@@ -2143,9 +2975,10 @@ Responde en español.`;
                       : `✓ holgura ${(batch.slack/60).toFixed(1)}h`;
                   return (
                     <div key={batch.id} style={{position:"absolute",top:4,height:28,left:`${left}%`,width:`${totalW}%`,display:"flex",borderRadius:4,overflow:"hidden",cursor:"pointer"}}
-                      title={`${batch.skuName} · Lote ${batch.batchNum}/${batch.batchTotal}\nMáq: ${op.machineName}\nSetup: ${op.setupTime}min\n${op.startTime.toLocaleTimeString()} → ${op.endTime.toLocaleTimeString()}\n${slackTip}`}>
+                      title={`${batch.skuName} · Lote ${batch.batchNum}/${batch.batchTotal}\nMáq: ${op.machineName}\nSetup: ${op.setupTime}min\n${op.startTime.toLocaleTimeString()} → ${op.endTime.toLocaleTimeString()}${op.isParallel ? "\n∥ Paralelo con otra etapa de este lote" : ""}\n${slackTip}`}>
                       {setupPct>0&&<div style={{width:`${setupPct}%`,background:"repeating-linear-gradient(-45deg,var(--surface-3),var(--surface-3) 3px,var(--border-alt) 3px,var(--border-alt) 6px)",flexShrink:0}}/>}
-                      <div style={{flex:1,background:batch.color,display:"flex",alignItems:"center",padding:"0 6px",opacity:.92,outline:slackOutline,outlineOffset:-1}}>
+                      <div style={{flex:1,background:batch.color,display:"flex",alignItems:"center",gap:4,padding:"0 6px",opacity:.92,outline:slackOutline,outlineOffset:-1}}>
+                        {op.isParallel && <span title="∥ En paralelo con otra etapa del mismo lote" style={{fontSize:11,color:"#38BDF8",background:"rgba(255,255,255,.9)",borderRadius:2,padding:"0 3px",fontWeight:700,lineHeight:"14px",flexShrink:0}}>∥</span>}
                         <span style={{fontSize:9,color:"rgba(255,255,255,.9)",fontWeight:600,fontFamily:"'DM Mono',monospace",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{batch.skuName.split(" ").slice(0,2).join(" ")}</span>
                       </div>
                     </div>
@@ -2626,7 +3459,7 @@ Responde en español.`;
                   <td style={{padding:"7px 10px",fontFamily:"'DM Mono',monospace",fontSize:10}}>
                     {sb?.isLate?<span style={{color:"#F87171"}}>tardío {Math.round(sb.tardiness)}m</span>:sb?<span style={{color:"#34D399"}}>a tiempo</span>:"—"}
                   </td>
-                  <td style={{padding:"7px 6px",whiteSpace:"nowrap"}}><button onClick={()=>handleDuplicateOrder(order.id)} title="Duplicar" style={{padding:"4px 8px",marginRight:4,borderRadius:4,background:"rgba(56,189,248,.08)",border:"1px solid rgba(56,189,248,.25)",color:"#38BDF8",cursor:"pointer",fontSize:11,fontFamily:"'DM Mono',monospace",lineHeight:1}}>⎘ Duplicar</button><button onClick={()=>{if(confirm(`¿Eliminar la orden ${order.id}? Esta acción no se puede deshacer.`)) handleRemoveOrder(order.id);}} title="Eliminar" style={{padding:"4px 8px",borderRadius:4,background:"rgba(248,113,113,.1)",border:"1px solid rgba(248,113,113,.3)",color:"#F87171",cursor:"pointer",fontSize:11,fontFamily:"'DM Mono',monospace",lineHeight:1,fontWeight:600}}>× Eliminar</button></td>
+                  <td style={{padding:"7px 6px",whiteSpace:"nowrap"}}><button onClick={()=>handleDuplicateOrder(order.id)} title="Duplicar" style={{padding:"4px 8px",marginRight:4,borderRadius:4,background:"rgba(56,189,248,.08)",border:"1px solid rgba(56,189,248,.25)",color:"#38BDF8",cursor:"pointer",fontSize:11,fontFamily:"'DM Mono',monospace",lineHeight:1}}>⎘ Duplicar</button><button onClick={()=>handleRemoveOrder(order.id)} title="Eliminar (con undo disponible 8s)" style={{padding:"4px 8px",borderRadius:4,background:"rgba(248,113,113,.1)",border:"1px solid rgba(248,113,113,.3)",color:"#F87171",cursor:"pointer",fontSize:11,fontFamily:"'DM Mono',monospace",lineHeight:1,fontWeight:600}}>× Eliminar</button></td>
                 </tr>
               );
             })}
@@ -2747,7 +3580,7 @@ Responde en español.`;
                   </td>
                   <td style={{padding:"9px 10px"}}>
                     {lineGoals[date]
-                      ? <button onClick={()=>{if(confirm(`¿Eliminar la meta de ${date}?`)) handleDailyGoalRemove(activeLine,date);}} title="Eliminar meta" style={{padding:"3px 8px",borderRadius:4,background:"rgba(248,113,113,.08)",border:"1px solid rgba(248,113,113,.25)",color:"#F87171",cursor:"pointer",fontSize:11,fontFamily:"'DM Mono',monospace",lineHeight:1}}>× Eliminar</button>
+                      ? <button onClick={()=>handleDailyGoalRemove(activeLine,date)} title="Eliminar meta (con undo disponible 8s)" style={{padding:"3px 8px",borderRadius:4,background:"rgba(248,113,113,.08)",border:"1px solid rgba(248,113,113,.25)",color:"#F87171",cursor:"pointer",fontSize:11,fontFamily:"'DM Mono',monospace",lineHeight:1}}>× Eliminar</button>
                       : <button onClick={()=>handleDailyGoalUpdate(activeLine,date,80000)} style={{fontSize:10,padding:"2px 8px",borderRadius:4,background:"var(--border)",border:"1px solid var(--border-2)",color:"var(--text-dim)",cursor:"pointer"}}>+ Meta</button>
                     }
                   </td>
@@ -2787,24 +3620,121 @@ Responde en español.`;
 
         {activeConfigTab==="stages"&&(
           <div>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-              <div style={{fontSize:11,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em"}}>{line.stages.length} etapas en {line?.name}</div>
+            <div style={{fontSize:11,color:"var(--text-muted)",background:"rgba(167,139,250,.05)",border:"1px solid rgba(167,139,250,.2)",borderRadius:7,padding:"9px 13px",marginBottom:10,lineHeight:1.5}}>
+              <strong style={{color:"#A78BFA"}}>💡 Prerrequisitos múltiples:</strong> por defecto, las etapas se procesan secuencialmente según <strong>Orden</strong>. Si una etapa necesita esperar a varias previas específicas (ej: <em>Ensamble</em> depende de <em>Corte</em> Y <em>Pulido</em>), márcalas como prerrequisitos. Solo arrancará cuando <strong>todas</strong> terminen.
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,gap:8,flexWrap:"wrap"}}>
+              <div style={{display:"flex",alignItems:"center",gap:10}}>
+                <div style={{fontSize:11,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em"}}>{line.stages.length} etapas en {line?.name}</div>
+                {/* View toggle */}
+                <div style={{display:"flex",gap:3,background:"var(--surface)",padding:3,borderRadius:5,border:"1px solid var(--border)"}}>
+                  {[["table","📋 Tabla"],["graph","🕸 Grafo"]].map(([id,lbl]) => (
+                    <button key={id} onClick={()=>setStagesView(id)} style={{padding:"4px 10px",borderRadius:3,border:"none",fontFamily:"'DM Mono',monospace",fontSize:10,cursor:"pointer",
+                      background: stagesView===id ? "var(--surface-2)" : "transparent",
+                      color: stagesView===id ? "var(--text)" : "var(--text-dim)",
+                      fontWeight: stagesView===id ? 600 : 400}}>{lbl}</button>
+                  ))}
+                </div>
+              </div>
               <button onClick={()=>handleAddStage(activeLine)} style={{fontSize:11,padding:"5px 12px",borderRadius:5,background:"rgba(245,158,11,.1)",border:"1px solid rgba(245,158,11,.3)",color:"#F59E0B",cursor:"pointer",fontFamily:"'DM Mono',monospace"}}>+ Agregar etapa</button>
             </div>
-            {line.stages.length===0 ? <div style={{textAlign:"center",padding:"30px",color:"var(--text-dim)",fontSize:13,background:"var(--surface)",borderRadius:8,border:"1px dashed var(--border)"}}>Sin etapas. Agrega la primera para empezar a definir el ruteo.</div> : (
+
+            {/* GRAPH VIEW */}
+            {stagesView === "graph" && (
+              <StagesGraph
+                line={line}
+                onToggle={(stageId, prereqId) => handleTogglePrerequisite(activeLine, stageId, prereqId)}
+                onClear={() => handleClearAllPrerequisites(activeLine)}
+                wouldCreateCycle={wouldCreateCycle}/>
+            )}
+
+            {/* TABLE VIEW (original) */}
+            {stagesView === "table" && (line.stages.length===0 ? <div style={{textAlign:"center",padding:"30px",color:"var(--text-dim)",fontSize:13,background:"var(--surface)",borderRadius:8,border:"1px dashed var(--border)"}}>Sin etapas. Agrega la primera para empezar a definir el ruteo.</div> : (
             <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-              <thead><tr>{["ID","Etapa","Orden","Máquinas",""].map(h=><th key={h} style={{textAlign:"left",fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"7px 10px",borderBottom:"1px solid var(--border)"}}>{h}</th>)}</tr></thead>
-              <tbody>{line.stages.sort((a,b)=>a.order-b.order).map(s=>(
+              <thead><tr>{["ID","Etapa","Orden","Máquinas","Prerrequisitos",""].map(h=><th key={h} style={{textAlign:"left",fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"7px 10px",borderBottom:"1px solid var(--border)"}}>{h}</th>)}</tr></thead>
+              <tbody>{line.stages.sort((a,b)=>a.order-b.order).map(s=>{
+                const prereqs = Array.isArray(s.prerequisites) ? s.prerequisites : [];
+                const otherStages = line.stages.filter(o => o.id !== s.id).sort((a,b)=>a.order-b.order);
+                return (
                 <tr key={s.id} style={{borderBottom:"1px solid var(--surface)"}}>
                   <td style={{padding:"7px 10px",fontFamily:"'DM Mono',monospace",fontSize:11,color:"var(--text-dim)"}}>{s.id}</td>
                   <td style={{padding:"7px 10px"}}><TextInput value={s.name} onCommit={v=>handleUpdateStage(activeLine,s.id,"name",v)} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontSize:12,outline:"none",width:"100%",maxWidth:240}}/></td>
                   <td style={{padding:"7px 10px"}}><NumberInput value={s.order} onCommit={v=>handleUpdateStage(activeLine,s.id,"order",v)} min={1} step={1} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:56}}/></td>
                   <td style={{padding:"7px 10px"}}>{line.machines.filter(m=>m.stageId===s.id).map(m=><span key={m.id} style={{display:"inline-block",background:"var(--border)",borderRadius:4,padding:"1px 7px",fontSize:10,margin:2,color:"var(--text-muted)"}}>{m.name}</span>)||<span style={{color:"var(--text-dim)",fontSize:10}}>—</span>}</td>
+                  <td style={{padding:"7px 10px",maxWidth:280}}>
+                    <div style={{display:"flex",flexWrap:"wrap",gap:4,alignItems:"center"}}>
+                      {otherStages.length === 0 ? (
+                        <span style={{fontSize:10,color:"var(--text-dim)",fontStyle:"italic"}}>—</span>
+                      ) : (
+                        <>
+                          {otherStages.map(o => {
+                            const isOn = prereqs.includes(o.id);
+                            return (
+                              <button key={o.id} onClick={()=>handleTogglePrerequisite(activeLine, s.id, o.id)}
+                                title={isOn ? `${o.name} debe terminar antes que ${s.name}` : `Click para agregar ${o.name} como prerrequisito de ${s.name}`}
+                                style={{padding:"2px 7px",fontSize:9,borderRadius:3,cursor:"pointer",fontFamily:"'DM Mono',monospace",fontWeight:isOn?700:500,
+                                  background: isOn ? "rgba(167,139,250,.15)" : "transparent",
+                                  border: "1px solid " + (isOn ? "rgba(167,139,250,.4)" : "var(--border-2)"),
+                                  color: isOn ? "#A78BFA" : "var(--text-dim)"}}>
+                                {isOn?"✓ ":""}{o.name}
+                              </button>
+                            );
+                          })}
+                          {prereqs.length > 0 && (
+                            <button onClick={()=>handleClearPrerequisites(activeLine, s.id)} title="Limpiar prerrequisitos (volver a usar Orden)" style={{padding:"2px 6px",fontSize:9,borderRadius:3,background:"transparent",border:"1px dashed var(--border-2)",color:"var(--text-dim)",cursor:"pointer",fontFamily:"'DM Mono',monospace"}}>↺</button>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </td>
                   <td style={{padding:"7px 6px"}}><button onClick={()=>handleRemoveStage(activeLine,s.id)} title="Eliminar etapa (también borra sus máquinas)" style={{width:22,height:22,borderRadius:4,background:"rgba(248,113,113,.08)",border:"1px solid rgba(248,113,113,.2)",color:"#F87171",cursor:"pointer",fontSize:13,lineHeight:1}}>×</button></td>
                 </tr>
-              ))}</tbody>
+              );})}</tbody>
             </table>
-            )}
+            ))}
+
+            {/* Family Routes Panel (Phase 2 — 1.1) */}
+            {line.stages.length > 0 && (() => {
+              const families = [...new Set(line.skus.map(s => s.family).filter(Boolean))];
+              const familyRoutes = line.familyRoutes || {};
+              if (families.length === 0) return null;
+              return (
+                <div style={{marginTop:24,padding:14,background:"var(--surface)",border:"1px solid var(--border)",borderRadius:8}}>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10,flexWrap:"wrap",gap:6}}>
+                    <div>
+                      <div style={{fontSize:12,fontWeight:600,color:"#38BDF8"}}>🛣 Rutas por familia</div>
+                      <div style={{fontSize:10,color:"var(--text-dim)",marginTop:2,lineHeight:1.4}}>
+                        Define una secuencia de etapas diferente para todos los SKUs de una familia. Si un SKU tiene su propia ruta personalizada (configurada en SKUs), esa gana sobre la de su familia.
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:8}}>
+                    {families.map(fam => {
+                      const route = familyRoutes[fam];
+                      const hasCustom = Array.isArray(route) && route.length > 0;
+                      const stageNames = hasCustom ? route.map(sid => line.stages.find(s=>s.id===sid)?.name || "?").filter(Boolean) : line.stages.slice().sort((a,b)=>a.order-b.order).map(s=>s.name);
+                      const skuCount = line.skus.filter(s => s.family === fam).length;
+                      return (
+                        <div key={fam} style={{padding:"9px 11px",background:"var(--surface-2)",border:"1px solid "+(hasCustom?"rgba(56,189,248,.3)":"var(--border-2)"),borderRadius:6}}>
+                          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:5}}>
+                            <div style={{fontSize:11,fontWeight:600}}>{fam}</div>
+                            <button onClick={()=>setRouteEditor({kind:"family",lid:activeLine,target:fam})} title="Editar ruta de familia" style={{padding:"3px 8px",fontSize:9,borderRadius:4,background:hasCustom?"rgba(56,189,248,.12)":"rgba(245,158,11,.1)",border:"1px solid "+(hasCustom?"rgba(56,189,248,.3)":"rgba(245,158,11,.3)"),color:hasCustom?"#38BDF8":"#F59E0B",cursor:"pointer",fontFamily:"'DM Mono',monospace",fontWeight:600}}>
+                              {hasCustom?"✎ Editar":"+ Crear"}
+                            </button>
+                          </div>
+                          <div style={{fontSize:9,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",marginBottom:4}}>
+                            {skuCount} SKU(s) · {hasCustom ? <span style={{color:"#38BDF8",fontWeight:600}}>RUTA CUSTOM</span> : <span>RUTA DEFAULT</span>}
+                          </div>
+                          <div style={{fontSize:10,color:"var(--text-muted)",lineHeight:1.4,wordBreak:"break-word"}}>
+                            {stageNames.length === 0 ? <span style={{color:"#F87171"}}>(vacía)</span> : stageNames.join(" → ")}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         )}
 
@@ -2854,11 +3784,12 @@ Responde en español.`;
             {line.skus.length===0 ? <div style={{textAlign:"center",padding:"30px",color:"var(--text-dim)",fontSize:13,background:"var(--surface)",borderRadius:8,border:"1px dashed var(--border)"}}>{line.stages.length?"Sin SKUs. Agrega el primero.":"Define etapas antes de agregar SKUs."}</div> : (
             <div style={{overflowX:"auto"}}>
               <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-                <thead><tr>{["Color","ID","Nombre","Familia","Lote","Valor unit. (COP)","Inventario","Máx. días"].concat(line.stages.sort((a,b)=>a.order-b.order).map(s=>s.name+" (min)")).concat([""]).map(h=><th key={h} style={{textAlign:"left",fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"7px 8px",borderBottom:"1px solid var(--border)",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
+                <thead><tr>{["Color","ID","Nombre","Familia","Lote","Valor unit. (COP)","Inventario","Lotes/día óptimo","Máx. días","Ruta"].concat(line.stages.sort((a,b)=>a.order-b.order).map(s=>s.name+" (min)")).concat([""]).map(h=><th key={h} style={{textAlign:"left",fontSize:10,color:"var(--text-dim)",fontFamily:"'DM Mono',monospace",textTransform:"uppercase",letterSpacing:".07em",padding:"7px 8px",borderBottom:"1px solid var(--border)",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
                 <tbody>{line.skus.map(sku=>{
                   const inv = typeof sku.inventory === "number" ? sku.inventory : 0;
                   const backlog = inv < 0;
                   const maxDays = typeof sku.maxConsecutiveDays === "number" ? sku.maxConsecutiveDays : 3;
+                  const optBatches = typeof sku.optimalBatchesPerDay === "number" ? sku.optimalBatchesPerDay : 5;
                   return (
                   <tr key={sku.id} style={{borderBottom:"1px solid var(--surface)",background:backlog?"rgba(248,113,113,.04)":"transparent"}}>
                     <td style={{padding:"7px 8px"}} title="Color asignado automáticamente"><div style={{width:24,height:18,borderRadius:4,background:sku.color,border:"1px solid var(--border)"}}/></td>
@@ -2870,18 +3801,54 @@ Responde en español.`;
                     <td style={{padding:"7px 8px"}}><NumberInput value={inv} onCommit={v=>handleUpdateInventory(activeLine,sku.id,v)} step={1} allowNegative={true} style={{background:"var(--surface)",border:"1px solid "+(backlog?"rgba(248,113,113,.4)":"var(--border)"),color:backlog?"#F87171":"var(--text)",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:72,fontWeight:backlog?700:400}} title={backlog?"⚠ Backlog: el SKU se programa primero, ignorando heurística":"Inventario inicial. Negativo = backlog (cliente final pendiente)."}/></td>
                     <td style={{padding:"7px 8px"}}>
                       <div style={{display:"flex",alignItems:"center",gap:4}}>
+                        <NumberInput value={optBatches} onCommit={v=>handleUpdateOptimalBatches(activeLine,sku.id,v)} min={1} step={1} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"#A78BFA",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:46,fontWeight:600}} title="Lotes óptimos producibles por día (capacidad diaria del SKU). También usado como límite por día en programación."/>
+                        {sku.family && (
+                          <button onClick={()=>handleApplyOptimalToFamily(activeLine,sku.id)} title={`Aplicar ${optBatches} lotes/día a toda la familia "${sku.family}"`} style={{padding:"2px 5px",fontSize:9,borderRadius:3,background:"transparent",border:"1px solid var(--border-2)",color:"var(--text-dim)",cursor:"pointer",fontFamily:"'DM Mono',monospace"}}>↪Fam</button>
+                        )}
+                      </div>
+                    </td>
+                    <td style={{padding:"7px 8px"}}>
+                      <div style={{display:"flex",alignItems:"center",gap:4}}>
                         <NumberInput value={maxDays} onCommit={v=>handleUpdateMaxDays(activeLine,sku.id,v)} min={1} step={1} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"#38BDF8",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:46,fontWeight:600}} title="Máximo de días productivos consecutivos para este SKU. Default: 3."/>
                         {sku.family && (
                           <button onClick={()=>handleApplyMaxDaysToFamily(activeLine,sku.id)} title={`Aplicar ${maxDays} días a toda la familia "${sku.family}"`} style={{padding:"2px 5px",fontSize:9,borderRadius:3,background:"transparent",border:"1px solid var(--border-2)",color:"var(--text-dim)",cursor:"pointer",fontFamily:"'DM Mono',monospace"}}>↪Fam</button>
                         )}
                       </div>
                     </td>
+                    <td style={{padding:"7px 8px",whiteSpace:"nowrap"}}>{(() => {
+                      const hasSkuRoute = Array.isArray(sku.customRoute) && sku.customRoute.length > 0;
+                      const familyRoute = sku.family && line.familyRoutes && line.familyRoutes[sku.family];
+                      const hasFamilyRoute = Array.isArray(familyRoute) && familyRoute.length > 0;
+                      const tag = hasSkuRoute ? "SKU" : hasFamilyRoute ? "FAM" : "DEF";
+                      const tagColor = hasSkuRoute ? "#F59E0B" : hasFamilyRoute ? "#38BDF8" : "var(--text-dim)";
+                      const bg = hasSkuRoute ? "rgba(245,158,11,.12)" : hasFamilyRoute ? "rgba(56,189,248,.12)" : "rgba(107,114,128,.1)";
+                      const border = hasSkuRoute ? "rgba(245,158,11,.3)" : hasFamilyRoute ? "rgba(56,189,248,.3)" : "var(--border-2)";
+                      const routeIds = hasSkuRoute ? sku.customRoute : hasFamilyRoute ? familyRoute : line.stages.slice().sort((a,b)=>a.order-b.order).map(s=>s.id);
+                      const stageCount = routeIds.length;
+                      const totalStages = line.stages.length;
+                      const title = hasSkuRoute ? "Ruta personalizada para este SKU" : hasFamilyRoute ? `Ruta heredada de familia "${sku.family}"` : "Ruta default (todas las etapas en orden)";
+                      return (
+                        <div style={{display:"flex",alignItems:"center",gap:4}}>
+                          <button onClick={()=>setRouteEditor({kind:"sku",lid:activeLine,target:sku.id})} title={title+" — click para editar"} style={{display:"flex",alignItems:"center",gap:4,padding:"3px 7px",fontSize:9,borderRadius:4,background:bg,border:`1px solid ${border}`,color:tagColor,cursor:"pointer",fontFamily:"'DM Mono',monospace",fontWeight:600}}>
+                            <span>{tag}</span>
+                            <span style={{opacity:.7}}>{stageCount}/{totalStages}</span>
+                            <span style={{fontSize:8}}>✎</span>
+                          </button>
+                        </div>
+                      );
+                    })()}</td>
                     {line.stages.sort((a,b)=>a.order-b.order).map(s=>(
                       <td key={s.id} style={{padding:"7px 8px"}}>
                         <NumberInput value={sku.stageTimes?.[s.id]||0} onCommit={v=>handleUpdateSkuStageTime(activeLine,sku.id,s.id,v)} min={0} step={1} style={{background:"var(--surface)",border:"1px solid var(--border)",color:"var(--text)",padding:"4px 7px",borderRadius:4,fontFamily:"'DM Mono',monospace",fontSize:11,outline:"none",width:54}}/>
                       </td>
                     ))}
-                    <td style={{padding:"7px 6px"}}><button onClick={()=>{if(confirm(`¿Eliminar ${sku.name}? Limpia matriz setup y secuencias prohibidas relacionadas.`)) handleRemoveSku(activeLine,sku.id);}} title="Eliminar SKU" style={{padding:"4px 8px",borderRadius:4,background:"rgba(248,113,113,.1)",border:"1px solid rgba(248,113,113,.3)",color:"#F87171",cursor:"pointer",fontSize:11,fontFamily:"'DM Mono',monospace",lineHeight:1,fontWeight:600}}>× Eliminar</button></td>
+                    <td style={{padding:"7px 6px"}}><button onClick={()=>{
+                      const ordersUsing = data.orders.filter(o => o.skuId === sku.id);
+                      if (ordersUsing.length > 0) {
+                        if (!confirm(`⚠ El SKU "${sku.name}" tiene ${ordersUsing.length} orden(es) asociadas. Eliminarlo dejará esas órdenes huérfanas. ¿Continuar?`)) return;
+                      }
+                      handleRemoveSku(activeLine,sku.id);
+                    }} title={(() => { const n = data.orders.filter(o=>o.skuId===sku.id).length; return n > 0 ? `⚠ Eliminar SKU (${n} órdenes lo usan, requiere confirmación)` : "Eliminar SKU (con undo disponible 8s)";})()} style={{padding:"4px 8px",borderRadius:4,background:"rgba(248,113,113,.1)",border:"1px solid rgba(248,113,113,.3)",color:"#F87171",cursor:"pointer",fontSize:11,fontFamily:"'DM Mono',monospace",lineHeight:1,fontWeight:600}}>× Eliminar</button></td>
                   </tr>
                 )})}</tbody>
               </table>
@@ -3460,6 +4427,23 @@ Responde en español.`;
           <ApiKeyModal currentKey={apiKey} onSave={handleSaveApiKey} onClose={()=>setShowApiKeyModal(false)} themeMode={themeMode}/>
         )}
 
+        {routeEditor && line && (
+          <RouteEditorModal
+            line={line}
+            editor={routeEditor}
+            themeMode={themeMode}
+            onClose={()=>setRouteEditor(null)}
+            onSave={(newRoute) => {
+              if (routeEditor.kind === "sku") {
+                handleUpdateSkuCustomRoute(routeEditor.lid, routeEditor.target, newRoute);
+              } else if (routeEditor.kind === "family") {
+                handleUpdateFamilyRoute(routeEditor.lid, routeEditor.target, newRoute);
+              }
+              setRouteEditor(null);
+            }}
+          />
+        )}
+
         <div className="kpi-strip">
           {[
             {
@@ -3555,6 +4539,15 @@ Responde en español.`;
         {/* Floating button to re-show AI panel */}
         {!showAiPanel && (
           <button onClick={()=>setShowAiPanel(true)} title="Mostrar asistente IA" style={{position:"fixed",bottom:48,right:18,zIndex:50,width:48,height:48,borderRadius:"50%",background:"#F59E0B",border:"none",color:"var(--bg)",cursor:"pointer",fontSize:22,fontWeight:700,boxShadow:"0 4px 12px rgba(0,0,0,.3)",display:"flex",alignItems:"center",justifyContent:"center"}}>💬</button>
+        )}
+
+        {/* Undo Snackbar (Phase 3 — 5.1) */}
+        {undoQueue.length > 0 && (
+          <div style={{position:"fixed",bottom:60,left:"50%",transform:"translateX(-50%)",zIndex:1100,display:"flex",flexDirection:"column",gap:8,maxWidth:"92vw",pointerEvents:"none"}}>
+            {undoQueue.map(item => (
+              <UndoToast key={item.id} item={item} onUndo={()=>applyUndo(item.id)} onDismiss={()=>setUndoQueue(q=>q.filter(it=>it.id!==item.id))}/>
+            ))}
+          </div>
         )}
 
         {/* Footer credit */}
